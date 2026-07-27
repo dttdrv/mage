@@ -822,6 +822,91 @@ final class MageStore: ObservableObject {
         library.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
+    // MARK: Headless Steam install (bin/mage steam-install)
+
+    /// Per-app install progress, fed by the CLI's JSON progress lines.
+    struct InstallState: Equatable {
+        var bytesDownloaded: Int64 = 0
+        var stateFlags: Int?
+        var active = true
+        var message: String?
+    }
+
+    @Published var installStates: [String: InstallState] = [:] // keyed by appid
+
+    /// Line accumulator for parsing streamed JSON across chunk boundaries.
+    private actor LineBuffer {
+        private var text = ""
+        func append(_ chunk: String) -> [String] {
+            text += chunk
+            var lines: [String] = []
+            while let nl = text.firstIndex(of: "\n") {
+                lines.append(String(text[text.startIndex..<nl]))
+                text = String(text[text.index(after: nl)...])
+            }
+            return lines
+        }
+    }
+
+    /// Install an owned game without opening a Steam window. The CLI keeps a
+    /// -silent client in the bottle's prefix and forwards +app_install.
+    func installGame(_ entry: LibraryEntry) {
+        guard let root, let appid = entry.appid,
+              installStates[appid] == nil,
+              let bottle = bottles.first(where: { $0.prefix == entry.prefix })
+        else { return }
+        installStates[appid] = InstallState()
+        statusLine = "Installing \(entry.title)…"
+        let cli = root.appendingPathComponent("bin/mage")
+        let buffer = LineBuffer()
+        Task {
+            let (_, code) = await Self.exec(
+                cli, ["steam-install", bottle.name, appid]) { chunk in
+                    Task {
+                        for line in await buffer.append(chunk) {
+                            await self.applyInstallLine(line, appid: appid)
+                        }
+                    }
+                }
+            if code == 0 {
+                installStates.removeValue(forKey: appid)
+                statusLine = "\(entry.title) installed"
+                load()
+            } else {
+                var state = installStates[appid] ?? InstallState()
+                state.active = false
+                state.message = code == 2
+                    ? "Still downloading in Steam — it finishes in the background."
+                    : "Install failed (exit \(code)) — see the Steam client for details."
+                installStates[appid] = state
+                statusLine = state.message ?? ""
+            }
+        }
+    }
+
+    private func applyInstallLine(_ line: String, appid: String) {
+        guard let data = line.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return }
+        var state = installStates[appid] ?? InstallState()
+        state.bytesDownloaded = obj["bytes_downloaded"] as? Int64 ?? state.bytesDownloaded
+        state.stateFlags = obj["state_flags"] as? Int ?? state.stateFlags
+        installStates[appid] = state
+    }
+
+    /// Short progress line for the detail page ("Downloading 3.4 GB…").
+    func installLabel(for appid: String) -> String {
+        guard let state = installStates[appid] else { return "" }
+        if !state.active, let message = state.message { return message }
+        if state.bytesDownloaded > 0 {
+            let gb = Double(state.bytesDownloaded) / 1_073_741_824
+            return gb >= 1
+                ? String(format: "Downloading %.1f GB…", gb)
+                : String(format: "Downloading %.0f MB…", gb * 1024)
+        }
+        return state.stateFlags == nil ? "Preparing install…" : "Installing…"
+    }
+
     // MARK: Bottle log tail
 
     func startLogTail(_ name: String) {

@@ -10,7 +10,10 @@ struct MageApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
-                .onAppear { store.load() }
+                .onAppear {
+                    store.load()
+                    Task { await Updater.shared.check(silent: true) }
+                }
                 .frame(minWidth: 1080, minHeight: 680)
         }
         .defaultSize(width: 1240, height: 820)
@@ -26,9 +29,11 @@ enum SidebarItem: String, Identifiable, CaseIterable {
 
 struct ContentView: View {
     @EnvironmentObject private var store: MageStore
+    @ObservedObject private var updater = Updater.shared
     @State private var sidebar: SidebarItem? = .library
     @State private var showSettings = false
     @State private var showOnboarding = false
+    @State private var showUpdatePrompt = false
 
     var body: some View {
         Group {
@@ -48,6 +53,14 @@ struct ContentView: View {
         .onAppear { showOnboarding = store.root == nil }
         .sheet(isPresented: $showSettings, onDismiss: { store.fetchOwnedGames() }) {
             SettingsView()
+        }
+        .sheet(isPresented: $showUpdatePrompt) {
+            if let release = updater.pendingRelease {
+                UpdatePromptSheet(release: release)
+            }
+        }
+        .onChange(of: updater.pendingRelease != nil) { _, available in
+            if available { showUpdatePrompt = true }
         }
     }
 
@@ -335,18 +348,24 @@ struct GameDetailView: View {
                             .buttonBorderShape(.capsule)
                             .disabled(store.busy)
                         } else if entry.ownedOnly, let appid = entry.appid {
-                            Button {
-                                if let prefix = store.steamCapablePrefix {
-                                    store.openInSteam("steam://install/\(appid)",
-                                                      prefix: prefix)
+                            if store.installStates[appid] != nil {
+                                HStack(spacing: 10) {
+                                    if store.installStates[appid]?.active == true {
+                                        ProgressView().controlSize(.small)
+                                    }
+                                    Text(store.installLabel(for: appid))
+                                        .foregroundStyle(.secondary)
                                 }
-                            } label: {
-                                Label("Install in Steam", systemImage: "arrow.down.circle")
+                                .font(.callout)
+                            } else {
+                                Button { store.installGame(entry) } label: {
+                                    Label("Install", systemImage: "arrow.down.circle")
+                                }
+                                .buttonStyle(.glassProminent)
+                                .buttonBorderShape(.capsule)
+                                .controlSize(.large)
+                                .disabled(store.steamCapablePrefix == nil)
                             }
-                            .buttonStyle(.glassProminent)
-                            .buttonBorderShape(.capsule)
-                            .controlSize(.large)
-                            .disabled(store.steamCapablePrefix == nil)
                         } else if let appid = entry.appid {
                             Button { store.setupWithMage(entry) } label: {
                                 Label("Set up with Mage", systemImage: "wand.and.stars")
@@ -837,6 +856,7 @@ struct OnboardingView: View {
 
 struct SettingsView: View {
     @EnvironmentObject private var store: MageStore
+    @ObservedObject private var updater = Updater.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showSteamSignIn = false
 
@@ -905,9 +925,21 @@ struct SettingsView: View {
                 }
 
                 Section("About") {
-                    LabeledContent("Mage", value: "0.3.0")
+                    LabeledContent("Mage", value: updater.currentVersion)
                     LabeledContent("Wine runtime",
                                    value: store.wineVersion.isEmpty ? "—" : store.wineVersion)
+                    HStack {
+                        Button(updater.checking ? "Checking…" : "Check for Updates") {
+                            Task { await updater.check(silent: false) }
+                        }
+                        .disabled(updater.checking)
+                        if !updater.statusLine.isEmpty {
+                            Text(updater.statusLine)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                     Text("Mage runs Windows games on Apple silicon using the "
                          + "Mage Wine fork and the Mage MoltenVK fork.")
                         .font(.caption)
@@ -927,6 +959,76 @@ struct SettingsView: View {
         }
         .frame(width: 560, height: 660)
         .sheet(isPresented: $showSteamSignIn) { SteamSignInSheet() }
+    }
+}
+
+/// Shown when a newer GitHub release exists (launch check or Settings).
+/// Update downloads, swaps /Applications/Mage.app and relaunches.
+struct UpdatePromptSheet: View {
+    @ObservedObject private var updater = Updater.shared
+    @Environment(\.dismiss) private var dismiss
+    let release: MageRelease
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 36))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Mage \(release.version) is available")
+                        .font(.title2.bold())
+                    Text("You have \(updater.currentVersion)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !release.notes.isEmpty {
+                ScrollView {
+                    Text(release.notes)
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .textSelection(.enabled)
+                }
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 12,
+                                                              style: .continuous))
+            }
+
+            if let error = updater.installError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Later") { dismiss() }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.capsule)
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(updater.installing)
+                Button {
+                    Task { await updater.install(release) }
+                } label: {
+                    if updater.installing {
+                        ProgressView().controlSize(.small)
+                            .frame(minWidth: 52)
+                    } else {
+                        Text("Update")
+                    }
+                }
+                .buttonStyle(.glassProminent)
+                .buttonBorderShape(.capsule)
+                .keyboardShortcut(.defaultAction)
+                .disabled(updater.installing)
+            }
+        }
+        .padding(24)
+        .frame(width: 460, height: 380)
     }
 }
 

@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -266,6 +267,120 @@ def cmd_run(args):
     print(f"mage: launched '{args.name}' (log: {log})")
 
 
+STEAM_EXE = r"C:\Program Files (x86)\Steam\steam.exe"
+STEAM_SILENT_ARGS = ["-silent", "-nobootstrapupdate", "-skipinitialbootstrap",
+                     "-noverifyfiles", "-cef-disable-gpu", "-cef-disable-gpu-compositing"]
+
+
+def steam_root(prefix):
+    return Path(prefix) / "drive_c/Program Files (x86)/Steam"
+
+
+def steam_client_pid(recipe, runtime, prefix):
+    """PID of the running Steam client from its ActiveProcess registry key;
+    0 when no client is up. Cheap probe that avoids pgrep false positives."""
+    env = run_env(recipe, runtime, prefix)
+    wine = str(runtime["root"] / runtime["wine"])
+    r = subprocess.run([wine, "reg", "query",
+                        r"HKCU\Software\Valve\Steam\ActiveProcess", "/v", "pid"],
+                       env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                       text=True, timeout=30)
+    m = re.search(r"\bpid\s+REG_DWORD\s+(0x[0-9a-fA-F]+|\d+)", r.stdout)
+    return int(m.group(1), 0) if m else 0
+
+
+def acf_state_flags(path):
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return None
+    m = re.search(r'"StateFlags"\s+"(\d+)"', text)
+    return int(m.group(1)) if m else None
+
+
+def dir_size_bytes(path):
+    if not path.is_dir():
+        return 0
+    r = subprocess.run(["du", "-sk", str(path)], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, text=True)
+    if r.returncode != 0:
+        return 0
+    return int(r.stdout.split("\t")[0].strip()) * 1024
+
+
+def install_snapshot(prefix, appid):
+    apps = steam_root(prefix) / "steamapps"
+    flags = acf_state_flags(apps / f"appmanifest_{appid}.acf")
+    downloaded = dir_size_bytes(apps / "downloading" / str(appid))
+    # StateFlags 4 = fully installed; anything else means work in flight.
+    return {"status": "ok", "appid": str(appid), "state_flags": flags,
+            "bytes_downloaded": downloaded, "installed": flags == 4}
+
+
+def cmd_steam_install(args):
+    """Install an owned game without ever showing a Steam window: ensure a
+    -silent Steam client is up in the bottle, forward +app_install to it, and
+    report progress as JSON lines while the manifest settles."""
+    meta, prefix = find_bottle(args.bottle)
+    recipe = load_recipe(meta["recipe"])
+    runtime = load_runtime(recipe["runtime"])
+    env = run_env(recipe, runtime, prefix)
+    wine = str(runtime["root"] / runtime["wine"])
+    appid = str(args.appid)
+    if not (steam_root(prefix) / "steam.exe").is_file():
+        die(f"bottle '{args.bottle}' has no Steam installation")
+    ensure_steam_wrapper(prefix)
+    log = Path(tempfile.gettempdir()) / f"mage-steam-install-{appid}.log"
+
+    if steam_client_pid(recipe, runtime, prefix) == 0:
+        lf = open(log, "w")
+        subprocess.Popen([wine, STEAM_EXE] + STEAM_SILENT_ARGS,
+                         env=env, stdout=lf, stderr=subprocess.STDOUT,
+                         start_new_session=True)
+        deadline = time.time() + args.steam_timeout
+        while time.time() < deadline:
+            if steam_client_pid(recipe, runtime, prefix) != 0:
+                break
+            time.sleep(2)
+        else:
+            die(f"Steam did not start within {args.steam_timeout}s (log: {log})")
+
+    # Forwarding: this second process hands +app_install to the running
+    # client via Steam's own single-instance IPC, then exits. A fresh client
+    # registers ActiveProcess before it is ready to accept forwarded
+    # commands, so a hung forward is killed and retried (idempotent).
+    for attempt in range(1, args.forward_retries + 1):
+        try:
+            r = subprocess.run([wine, STEAM_EXE, "-silent", "+app_install", appid],
+                               env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            print(f"mage: forward attempt {attempt} timed out; client not ready yet",
+                  file=sys.stderr)
+            time.sleep(5)
+            continue
+        if r.returncode != 0:
+            die(f"forwarding +app_install {appid} failed ({r.returncode})")
+        break
+    else:
+        die("Steam client never became ready to accept +app_install")
+
+    if args.no_wait:
+        print(json.dumps(install_snapshot(prefix, appid)))
+        return
+    deadline = time.time() + args.wait
+    while True:
+        snap = install_snapshot(prefix, appid)
+        print(json.dumps(snap), flush=True)
+        if snap["installed"]:
+            return
+        if time.time() >= deadline:
+            snap["status"] = "timeout"
+            print(json.dumps(snap))
+            sys.exit(2)
+        time.sleep(3)
+
+
 def cmd_doctor(args):
     meta, prefix = find_bottle(args.name)
     recipe = load_recipe(meta["recipe"])
@@ -318,6 +433,19 @@ def main():
                         help="ensure the single-process steamwebhelper wrapper in a prefix")
     pw.add_argument("prefix")
     pw.set_defaults(fn=lambda a: ensure_steam_wrapper(Path(a.prefix)))
+    ps = sub.add_parser("steam-install",
+                        help="install an owned game via a -silent Steam client (+app_install)")
+    ps.add_argument("bottle", help="bottle whose prefix has Steam (see: mage list)")
+    ps.add_argument("appid", type=int)
+    ps.add_argument("--wait", type=int, default=1800,
+                    help="max seconds to poll for install completion (default 1800)")
+    ps.add_argument("--no-wait", action="store_true",
+                    help="forward the install command and print one status snapshot")
+    ps.add_argument("--steam-timeout", type=int, default=120,
+                    help="max seconds to wait for the silent Steam client to come up")
+    ps.add_argument("--forward-retries", type=int, default=6,
+                    help="attempts to forward +app_install while the client warms up")
+    ps.set_defaults(fn=cmd_steam_install)
     args = p.parse_args()
     args.fn(args)
 
