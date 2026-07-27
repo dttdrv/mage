@@ -1,0 +1,18 @@
+# Local state / heavy artifacts — never publish
+prefixes/
+build/
+dist/
+runtimes/
+worktrees/
+tools/steam-bridge/auth/
+*.log
+
+# OS / tooling noise
+.DS_Store
+__pycache__/
+*.pyc
+vendor/
+.venv/
+tools/computer-use/
+app/.build/
+docs/testing/

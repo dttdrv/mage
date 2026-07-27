@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""mage — OSS CrossOver alternative for Apple silicon. 0.1 alpha CLI."""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from pathlib import Path
+
+MAGE_DIR = Path(__file__).resolve().parent.parent
+RECIPES_DIR = MAGE_DIR / "recipes"
+RUNTIMES_DIR = MAGE_DIR / "runtimes"
+PREFIXES_DIR = MAGE_DIR / "prefixes"
+DIAG_DIR = MAGE_DIR / "docs" / "testing" / "diagnostics"
+MARKER = ".mage-bottle.json"
+
+
+def die(msg, code=1):
+    print(f"mage: error: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def load_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        die(f"not found: {path}")
+    except json.JSONDecodeError as e:
+        die(f"invalid json in {path}: {e}")
+
+
+def load_recipe(rid):
+    return load_json(RECIPES_DIR / f"{rid}.json")
+
+
+def load_runtime(rid):
+    rt = load_json(RUNTIMES_DIR / f"{rid}.json")
+    root = Path(rt["root"])
+    if not root.is_absolute():
+        root = (MAGE_DIR / root).resolve()
+    rt["root"] = root
+    if not (root / rt["wine"]).exists():
+        die(f"runtime {rid}: {root / rt['wine']} does not exist")
+    return rt
+
+
+def marker_path(prefix):
+    return Path(prefix) / MARKER
+
+
+def find_bottle(name):
+    """Bottle by name: mage-managed prefix, or any marker referencing it."""
+    for marker in [PREFIXES_DIR / name / MARKER]:
+        if marker.exists():
+            m = load_json(marker)
+            return m, marker.parent
+    # search imported bottles (marker holds name); scan known locations
+    for marker in PREFIXES_DIR.glob(f"*/{MARKER}"):
+        m = load_json(marker)
+        if m.get("name") == name:
+            return m, marker.parent
+    # imported prefixes live outside mage/: record them in a registry file
+    reg = MAGE_DIR / "prefixes" / "imported.json"
+    if reg.exists():
+        for entry in load_json(reg):
+            if entry.get("name") == name:
+                return entry, Path(entry["prefix"])
+    die(f"no bottle named '{name}' (see: mage list)")
+
+
+def register_import(name, prefix, recipe_id):
+    reg = PREFIXES_DIR / "imported.json"
+    entries = load_json(reg) if reg.exists() else []
+    entries = [e for e in entries if e.get("name") != name]
+    entries.append({"name": name, "recipe": recipe_id, "prefix": str(prefix)})
+    PREFIXES_DIR.mkdir(exist_ok=True)
+    with open(reg, "w") as f:
+        json.dump(entries, f, indent=2)
+
+
+def run_env(recipe, runtime, prefix):
+    env = dict(os.environ)
+    env.update(recipe.get("env", {}))
+    env["WINEPREFIX"] = str(prefix)
+    env["CX_REPORT_REAL_USERNAME"] = "1"
+    env["DYLD_FALLBACK_LIBRARY_PATH"] = str(runtime["root"] / "lib")
+    return env
+
+
+def configure_prefix(recipe, runtime, prefix):
+    wine = str(runtime["root"] / runtime["wine"])
+    env = run_env(recipe, runtime, prefix)
+    key = r"HKCU\Software\Wine\X11 Driver"
+    query = subprocess.run([wine, "reg", "query", key, "/v", "EmulateModeset"],
+                           env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if query.returncode:
+        result = subprocess.run([wine, "reg", "add", key, "/v", "EmulateModeset", "/t", "REG_SZ",
+                                 "/d", "Y", "/f"], env=env)
+        if result.returncode:
+            die(f"prefix configuration failed ({result.returncode})")
+
+
+def cmd_list(_args):
+    print("recipes:")
+    for r in sorted(RECIPES_DIR.glob("*.json")):
+        j = load_json(r)
+        print(f"  {j['id']:<16} {j.get('title', '')}")
+    print("bottles:")
+    found = False
+    for marker in sorted(PREFIXES_DIR.glob(f"*/{MARKER}")):
+        m = load_json(marker)
+        print(f"  {m['name']:<16} recipe={m['recipe']}  prefix={marker.parent}")
+        found = True
+    reg = PREFIXES_DIR / "imported.json"
+    if reg.exists():
+        for e in load_json(reg):
+            print(f"  {e['name']:<16} recipe={e['recipe']}  prefix={e['prefix']} (imported)")
+            found = True
+    if not found:
+        print("  (none)")
+
+
+def cmd_install(args):
+    recipe = load_recipe(args.recipe)
+    runtime = load_runtime(recipe["runtime"])
+    name = args.name or recipe["id"]
+    if args.import_prefix:
+        prefix = Path(args.import_prefix).resolve()
+        if not prefix.is_dir():
+            die(f"--import-prefix {prefix} is not a directory")
+        register_import(name, prefix, recipe["id"])
+        print(f"imported {prefix} as bottle '{name}'")
+    else:
+        prefix = PREFIXES_DIR / name
+        prefix.mkdir(parents=True, exist_ok=True)
+        env = run_env(recipe, runtime, prefix)
+        print(f"initializing prefix {prefix} (wineboot)...")
+        r = subprocess.run([str(runtime["root"] / runtime["wine"]), "wineboot", "--init"], env=env)
+        if r.returncode != 0:
+            die(f"wineboot failed ({r.returncode})")
+    configure_prefix(recipe, runtime, prefix)
+    marker = {"name": name, "recipe": recipe["id"], "prefix": str(prefix),
+              "created": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    with open(marker_path(prefix), "w") as f:
+        json.dump(marker, f, indent=2)
+    warns = file_checks(recipe, prefix)
+    for w in warns:
+        print(f"  warning: {w}")
+    print(f"bottle '{name}' ready")
+
+
+def file_checks(recipe, prefix):
+    warns = []
+    for chk in recipe.get("file_checks", []):
+        if not (Path(prefix) / chk["path"]).exists():
+            warns.append(f"missing {chk['path']} — {chk.get('hint', '')}")
+    return warns
+
+
+WRAPPER_MARKER = b"MAGE-STEAMWEBHELPER-WRAPPER"
+
+
+def ensure_steam_wrapper(prefix):
+    """Install/lock the single-process steamwebhelper wrapper if the prefix
+    has Steam and the wrapper is missing, outdated, or unlocked. Idempotent.
+    Steam self-heals the real exe over the wrapper otherwise (uchg lock), and
+    Steam client updates replace the binary outright (re-installed here).
+
+    Marker-based: a file containing WRAPPER_MARKER is one of our wrapper
+    builds, never Valve's binary. Only genuine Valve binaries may be backed
+    up as steamwebhelper_real.exe — backing up a wrapper there makes the
+    wrapper exec itself in a fork loop (incident 2026-07-28)."""
+    import stat as statmod
+    cef = Path(prefix) / "drive_c/Program Files (x86)/Steam/bin/cef/cef.win64"
+    target = cef / "steamwebhelper.exe"
+    real = cef / "steamwebhelper_real.exe"
+    wrapper = MAGE_DIR / "tools" / "steamwebhelper-wrapper" / "steamwebhelper.exe"
+    if not target.is_file() or not wrapper.is_file():
+        return
+    wbytes = wrapper.read_bytes()
+    tbytes = target.read_bytes()
+    target_is_wrapper = WRAPPER_MARKER in tbytes
+    if real.is_file() and WRAPPER_MARKER in real.read_bytes():
+        # corrupted backup (would fork-loop) — quarantine it
+        real.rename(cef / "steamwebhelper_real.CORRUPT-do-not-use.exe")
+        print("mage: warning: steamwebhelper_real.exe was a wrapper build "
+              "(would crash-loop); quarantined", file=sys.stderr)
+    if tbytes != wbytes:
+        subprocess.run(["chflags", "nouchg", str(target)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if not target_is_wrapper and not real.is_file():
+            real.write_bytes(tbytes)  # genuine Valve binary — keep exactly once
+        target.write_bytes(wbytes)
+        print("mage: steamwebhelper wrapper (re)installed")
+    flags = os.stat(target).st_flags
+    if not (flags & statmod.UF_IMMUTABLE):
+        subprocess.run(["chflags", "uchg", str(target)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("mage: steamwebhelper wrapper locked (uchg)")
+
+
+def ensure_app_launcher(runtime, name):
+    """Create/update a copy of the wine loader named after the app (patched
+    embedded Info.plist) so the Dock/menu bar show e.g. "Steam" not "Wine".
+    mage-wine's ntdll execs it when MAGE_APP_NAME is set. Idempotent."""
+    tool = MAGE_DIR / "tools" / "wine-app-name" / "patch-wine-loader-name.py"
+    if not tool.is_file():
+        return
+    subprocess.run([sys.executable, str(tool), str(runtime["root"]), name],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def app_name_for(program):
+    """'C:\\Program Files (x86)\\Steam\\steam.exe' -> 'Steam'"""
+    base = program.replace("\\", "/").rsplit("/", 1)[-1]
+    if base.lower().endswith(".exe"):
+        base = base[:-4]
+    return base[:1].upper() + base[1:] if base else "Wine"
+
+
+def cmd_run(args):
+    meta, prefix = find_bottle(args.name)
+    recipe = load_recipe(meta["recipe"])
+    runtime = load_runtime(recipe["runtime"])
+    env = run_env(recipe, runtime, prefix)
+    wine = str(runtime["root"] / runtime["wine"])
+    log = Path(tempfile.gettempdir()) / f"mage-{args.name}.log"
+
+    steps = []
+    for st in recipe.get("launch", []):
+        app = app_name_for(st["program"])
+        ensure_app_launcher(runtime, app)
+        steps.append((app, [wine, st["program"]] + st.get("args", [])))
+
+    if args.dry_run:
+        print(f"log: {log}")
+        for k in sorted(env):
+            if k.startswith(("WINE", "ROSETTA", "MTL", "MVK", "DYLD")):
+                print(f"env {k}={env[k]}")
+        for app, s in steps:
+            print(f"env MAGE_APP_NAME={app}")
+            print("run " + " ".join(s))
+        return
+
+    configure_prefix(recipe, runtime, prefix)
+    ensure_steam_wrapper(prefix)
+    for w in file_checks(recipe, prefix):
+        print(f"mage: warning: {w}", file=sys.stderr)
+    lf = open(log, "w")
+    for st, (app, cmd) in zip(recipe.get("launch", []), steps):
+        step_env = dict(env, MAGE_APP_NAME=app)
+        print(f"mage: {' '.join([cmd[1]] + st.get('args', []))}")
+        if st.get("background", True):
+            subprocess.Popen(cmd, env=step_env, stdout=lf, stderr=subprocess.STDOUT,
+                             start_new_session=True)
+        else:
+            subprocess.run(cmd, env=step_env, stdout=lf, stderr=subprocess.STDOUT)
+        wait = st.get("then_wait", 0)
+        if wait:
+            print(f"mage: waiting {wait}s")
+            time.sleep(wait)
+    print(f"mage: launched '{args.name}' (log: {log})")
+
+
+def cmd_doctor(args):
+    meta, prefix = find_bottle(args.name)
+    recipe = load_recipe(meta["recipe"])
+    runtime = load_runtime(recipe["runtime"])
+    DIAG_DIR.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    out = DIAG_DIR / f"{args.name}-{ts}.tgz"
+    log = Path(tempfile.gettempdir()) / f"mage-{args.name}.log"
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "recipe.json").write_text(json.dumps(recipe, indent=2))
+        rt = dict(runtime)
+        rt["root"] = str(rt["root"])
+        (d / "runtime.json").write_text(json.dumps(rt, indent=2))
+        (d / "bottle.json").write_text(json.dumps(meta, indent=2, default=str))
+        (d / "env.txt").write_text("\n".join(
+            f"{k}={v}" for k, v in sorted(run_env(recipe, runtime, prefix).items())
+            if k.startswith(("WINE", "ROSETTA", "MTL", "MVK", "DYLD"))))
+        subprocess.run(["sw_vers"], stdout=open(d / "sw_vers.txt", "w"))
+        subprocess.run([str(runtime["root"] / runtime["wine"]), "--version"],
+                       stdout=open(d / "wine-version.txt", "w"),
+                       env=run_env(recipe, runtime, prefix))
+        warns = file_checks(recipe, prefix)
+        (d / "file-checks.txt").write_text("\n".join(warns) if warns else "all ok\n")
+        if log.exists():
+            (d / "last-log-tail.txt").write_text(
+                "".join(open(log, errors="replace").readlines()[-500:]))
+        with tarfile.open(out, "w:gz") as tar:
+            tar.add(d, arcname=f"{args.name}-{ts}")
+    print(f"mage: diagnostics → {out}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="mage", description=__doc__)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list").set_defaults(fn=cmd_list)
+    pi = sub.add_parser("install")
+    pi.add_argument("recipe")
+    pi.add_argument("--name")
+    pi.add_argument("--import-prefix")
+    pi.set_defaults(fn=cmd_install)
+    pr = sub.add_parser("run")
+    pr.add_argument("name")
+    pr.add_argument("--dry-run", action="store_true")
+    pr.set_defaults(fn=cmd_run)
+    pd = sub.add_parser("doctor")
+    pd.add_argument("name")
+    pd.set_defaults(fn=cmd_doctor)
+    pw = sub.add_parser("steam-wrapper",
+                        help="ensure the single-process steamwebhelper wrapper in a prefix")
+    pw.add_argument("prefix")
+    pw.set_defaults(fn=lambda a: ensure_steam_wrapper(Path(a.prefix)))
+    args = p.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

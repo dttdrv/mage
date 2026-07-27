@@ -1,0 +1,49 @@
+{
+  "env" : {
+    "MVK_CONFIG_FAKE_GEOMETRY_SHADER" : "1",
+    "MVK_CONFIG_FAKE_ROBUST_BUFFER_ACCESS_2" : "1",
+    "MVK_CONFIG_FAKE_SHADER_CULL_DISTANCE" : "1",
+    "ROSETTA_ADVERTISE_AVX" : "1",
+    "WINEDLLOVERRIDES" : "mscoree=d;mshtml=d;d3d11=n;dxgi=n",
+    "WINEESYNC" : "0",
+    "WINEMSYNC" : "1"
+  },
+  "file_checks" : [
+    {
+      "hint" : "replace CChromaEditorLibrary.dll with Riesi's OSS build (github.com\/Riesi\/CChromaEditor releases, 64-bit, keep original as .bak) — stock DLL spins two threads forever and the game AVs",
+      "path" : "drive_c\/Program Files (x86)\/Steam\/steamapps\/common\/DOOM\/CChromaEditorLibrary.dll.bak"
+    }
+  ],
+  "id" : "doom2016",
+  "launch" : [
+    {
+      "args" : [
+        "-offline",
+        "-noverifyfiles",
+        "-nobootstrapupdate",
+        "-skipinitialbootstrap",
+        "-cef-disable-sandbox",
+        "-cef-disable-gpu",
+        "-cef-disable-gpu-compositing"
+      ],
+      "background" : true,
+      "program" : "C:\\Program Files (x86)\\Steam\\steam.exe",
+      "then_wait" : 20
+    },
+    {
+      "args" : [
+        "-applaunch",
+        "379720",
+        "+com_SkipIntroVideo",
+        "1",
+        "+r_renderAPI",
+        "1"
+      ],
+      "background" : true,
+      "program" : "C:\\Program Files (x86)\\Steam\\steam.exe"
+    }
+  ],
+  "runtime" : "mage-wine-11.13",
+  "steam_appid" : "379720",
+  "title" : "DOOM (2016)"
+}
