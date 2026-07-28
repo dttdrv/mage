@@ -298,6 +298,24 @@ def acf_state_flags(path):
     return int(m.group(1)) if m else None
 
 
+def steam_logged_in(prefix):
+    """True once the client holds a real account session. A client that is
+    still booting — or stuck applying its own self-update — sits at
+    SetSteamID [U:1:0] and silently drops forwarded commands, so this is
+    the gate before +app_install. Reads connection_log.txt, no probing."""
+    log = steam_root(prefix) / "logs/connection_log.txt"
+    try:
+        lines = log.read_text(errors="replace").splitlines()
+    except OSError:
+        return False
+    for line in reversed(lines[-400:]):
+        if "SetSteamID" in line:
+            # [U:1:<accountid>] — 0 means anonymous / not logged on.
+            m = re.search(r"SetSteamID\( \[U:1:(\d+)\] \)", line)
+            return bool(m and m.group(1) != "0")
+    return False
+
+
 def dir_size_bytes(path):
     if not path.is_dir():
         return 0
@@ -345,9 +363,31 @@ def cmd_steam_install(args):
         die(f"Steam did not start within {args.steam_timeout}s (log: {log})")
 
     started_here = False
+    restarted = False
     if steam_client_pid(recipe, runtime, prefix) == 0:
         start_client()
         started_here = True
+
+    # Login gate: until the client holds a real account session it silently
+    # drops +app_install, so forwarding earlier is wasted work. A client
+    # applying a self-update may exit and relaunch itself mid-wait; if the
+    # pid vanishes without the client coming back, restart it once.
+    deadline = time.time() + args.steam_timeout
+    while not steam_logged_in(prefix):
+        if time.time() >= deadline:
+            die(f"Steam did not reach a logged-in session within "
+                f"{args.steam_timeout}s (log: {log})")
+        if steam_client_pid(recipe, runtime, prefix) == 0:
+            if restarted:
+                die("Steam client exited during login and did not come back")
+            time.sleep(5)
+            if steam_client_pid(recipe, runtime, prefix) == 0:
+                print("mage: Steam client died during boot; restarting",
+                      file=sys.stderr)
+                start_client()
+                restarted = True
+                started_here = True
+        time.sleep(2)
 
     # Forwarding: this second process hands +app_install to the running
     # client via Steam's own single-instance IPC, then exits. A fresh client

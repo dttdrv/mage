@@ -469,3 +469,15 @@ Data home: Steam bottle moved to
 ~/Library/Application Support/Mage/bottles/steam (imported.json
 updated). DOOM 2016.app shell in ~/Applications is now empty of prefix
 and can be deleted.
+
+## 2026-07-29: Dark Ages download + login-order lesson
+
+DOOM: The Dark Ages (3017860, owned) downloading into the steam bottle.
+Hard-won sequencing fact for steam-install: +app_install only sticks when
+the client is FULLY logged on (connection_log SetSteamID with the real
+account id, not [U:1:0]). A client mid self-update never logs on and
+drops every forwarded command; fix was shutdown -> relaunch (update
+applies on boot) -> wait for real SetSteamID -> forward. The CLI's
+confirm loop detects drops but gives up before an updating client
+settles; TODO: also gate on login state (connection_log) before
+forwarding, and tolerate client-restart-for-update in the wait loop.

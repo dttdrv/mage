@@ -1,0 +1,36 @@
+{
+  "env" : {
+    "ROSETTA_ADVERTISE_AVX" : "1",
+    "WINEDLLOVERRIDES" : "mscoree=d;mshtml=d",
+    "WINEESYNC" : "0",
+    "WINEMSYNC" : "1"
+  },
+  "id" : "doom-the-dark-ages",
+  "launch" : [
+    {
+      "args" : [
+        "-offline",
+        "-noverifyfiles",
+        "-nobootstrapupdate",
+        "-skipinitialbootstrap",
+        "-cef-disable-sandbox",
+        "-cef-disable-gpu",
+        "-cef-disable-gpu-compositing"
+      ],
+      "background" : true,
+      "program" : "C:\\Program Files (x86)\\Steam\\steam.exe",
+      "then_wait" : 20
+    },
+    {
+      "args" : [
+        "-applaunch",
+        "3017860"
+      ],
+      "background" : true,
+      "program" : "C:\\Program Files (x86)\\Steam\\steam.exe"
+    }
+  ],
+  "runtime" : "mage-wine-11.13",
+  "steam_appid" : "3017860",
+  "title" : "DOOM: The Dark Ages"
+}
