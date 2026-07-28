@@ -407,22 +407,18 @@ struct GameDetailView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        GlassEffectContainer(spacing: 10) {
-                            HStack(spacing: 10) {
-                                chip(store.wineVersion.isEmpty ? "mage-wine" : store.wineVersion,
-                                     icon: "cpu")
-                                if let bottle {
-                                    chip(store.prefixSizes[bottle.name] ?? "…",
-                                         icon: "internaldrive")
-                                    if bottle.imported {
-                                        chip("imported", icon: "square.and.arrow.down")
-                                    }
+                        HStack(spacing: 10) {
+                            if let bottle {
+                                chip(store.prefixSizes[bottle.name] ?? "…",
+                                     icon: "internaldrive")
+                                if bottle.imported {
+                                    chip("imported", icon: "square.and.arrow.down")
                                 }
-                                if let appid = entry.appid {
-                                    chip("AppID \(appid)", icon: "number")
-                                }
-                                Spacer()
                             }
+                            if let appid = entry.appid {
+                                chip("AppID \(appid)", icon: "number")
+                            }
+                            Spacer()
                         }
 
                         Text(entry.prefix.path)
@@ -480,12 +476,14 @@ struct GameDetailView: View {
         }
     }
 
+    /// Info tag, not a button: quiet capsule, no glass button treatment.
     private func chip(_ text: String, icon: String) -> some View {
         Label(text, systemImage: icon)
-            .font(.callout)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .glassEffect(.regular, in: .capsule)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(.quaternary, in: .capsule)
     }
 
     /// Steam-style progress: playtime from the owned feed + achievement

@@ -418,3 +418,23 @@ A/B levers in docs/research/perf-goldmines.md (PREFILL_METAL_COMMAND_BUFFERS,
 swapchain present-mode check, ROSETTA_ADVERTISE_AVX off-test);
 (c) black spots on enemies — suspect MVK_CONFIG_FAKE_NULL_DESCRIPTOR,
 already removed from recipe, awaiting user confirmation.
+
+## 2026-07-28: GitHub repo + 0.4.0 (updates, headless installs)
+
+- Repo live: github.com/dttdrv/mage (mage/ only; vendor, prefixes,
+  docs/testing, venvs, steam-bridge/auth gitignored — auth holds the
+  live Steam session token, never commit it).
+- 0.4.0: Updater.swift checks the latest GitHub release on launch
+  (silent) and from Settings; downloads the zip asset, trashes the old
+  /Applications/Mage.app, installs the new one, relaunches, restores
+  the old app from Trash on failure. Releases: zip via
+  `ditto -c -k --keepParent /Applications/Mage.app`, `gh release create`.
+- Headless installs: `bin/mage steam-install <bottle> <appid>` starts
+  Steam with -silent (+nobootstrapupdate/-skipinitialbootstrap/
+  -noverifyfiles/-cef-disable-gpu*), waits for the ActiveProcess
+  registry pid, forwards `+app_install <appid>` (second-process
+  single-instance IPC; first forward can time out while the client
+  warms — retry), polls appmanifest_<id>.acf StateFlags (4 = installed)
+  plus steamapps/downloading/<id> size, streams JSON progress lines.
+  Verified live with appid 379720: no Steam window, no leftover wine
+  processes. App game pages show Install + progress for owned games.

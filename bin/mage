@@ -332,7 +332,7 @@ def cmd_steam_install(args):
     ensure_steam_wrapper(prefix)
     log = Path(tempfile.gettempdir()) / f"mage-steam-install-{appid}.log"
 
-    if steam_client_pid(recipe, runtime, prefix) == 0:
+    def start_client():
         lf = open(log, "w")
         subprocess.Popen([wine, STEAM_EXE] + STEAM_SILENT_ARGS,
                          env=env, stdout=lf, stderr=subprocess.STDOUT,
@@ -340,15 +340,22 @@ def cmd_steam_install(args):
         deadline = time.time() + args.steam_timeout
         while time.time() < deadline:
             if steam_client_pid(recipe, runtime, prefix) != 0:
-                break
+                return
             time.sleep(2)
-        else:
-            die(f"Steam did not start within {args.steam_timeout}s (log: {log})")
+        die(f"Steam did not start within {args.steam_timeout}s (log: {log})")
+
+    started_here = False
+    if steam_client_pid(recipe, runtime, prefix) == 0:
+        start_client()
+        started_here = True
 
     # Forwarding: this second process hands +app_install to the running
     # client via Steam's own single-instance IPC, then exits. A fresh client
     # registers ActiveProcess before it is ready to accept forwarded
     # commands, so a hung forward is killed and retried (idempotent).
+    # The registry pid also goes stale when a client was killed without
+    # shutdown: if we did not start the client and the first forward hangs,
+    # the "running" client is a ghost — start a real one and retry.
     for attempt in range(1, args.forward_retries + 1):
         try:
             r = subprocess.run([wine, STEAM_EXE, "-silent", "+app_install", appid],
@@ -357,6 +364,11 @@ def cmd_steam_install(args):
         except subprocess.TimeoutExpired:
             print(f"mage: forward attempt {attempt} timed out; client not ready yet",
                   file=sys.stderr)
+            if not started_here:
+                print("mage: stale Steam registry pid; starting a fresh client",
+                      file=sys.stderr)
+                start_client()
+                started_here = True
             time.sleep(5)
             continue
         if r.returncode != 0:

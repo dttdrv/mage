@@ -739,7 +739,18 @@ final class MageStore: ObservableObject {
               !achievementInFlight.contains(appid) else { return }
         achievementInFlight.insert(appid)
         Task {
-            let obj = await Self.runBridge(root: root, ["progress", appid])
+            // Race the bridge against a timeout: a wedged helper process must
+            // not leave the detail page spinning forever.
+            let obj = await withTaskGroup(of: [String: Any].self) { group in
+                group.addTask { await Self.runBridge(root: root, ["progress", appid]) }
+                group.addTask {
+                    try? await Task.sleep(for: .seconds(30))
+                    return ["status": "error", "message": "achievement fetch timed out"]
+                }
+                let first = await group.next() ?? ["status": "error"]
+                group.cancelAll()
+                return first
+            }
             achievementInFlight.remove(appid)
             if (obj["status"] as? String) == "ok",
                let unlocked = obj["unlocked"] as? Int,
@@ -852,9 +863,14 @@ final class MageStore: ObservableObject {
     /// -silent client in the bottle's prefix and forwards +app_install.
     func installGame(_ entry: LibraryEntry) {
         guard let root, let appid = entry.appid,
-              installStates[appid] == nil,
-              let bottle = bottles.first(where: { $0.prefix == entry.prefix })
+              installStates[appid] == nil
         else { return }
+        let bottle = bottles.first(where: { $0.prefix == entry.prefix })
+            ?? bottles.first(where: { $0.prefix == steamCapablePrefix })
+        guard let bottle else {
+            statusLine = "No Steam bottle found — set one up first."
+            return
+        }
         installStates[appid] = InstallState()
         statusLine = "Installing \(entry.title)…"
         let cli = root.appendingPathComponent("bin/mage")
@@ -1008,6 +1024,7 @@ final class MageStore: ObservableObject {
                 onChunk?(String(decoding: chunk, as: UTF8.self))
             }
             process.terminationHandler = { proc in
+                pipe.fileHandleForReading.readabilityHandler = nil
                 lock.lock()
                 collected.append(pipe.fileHandleForReading.readDataToEndOfFile())
                 lock.unlock()
