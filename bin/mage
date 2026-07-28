@@ -356,6 +356,9 @@ def cmd_steam_install(args):
     # The registry pid also goes stale when a client was killed without
     # shutdown: if we did not start the client and the first forward hangs,
     # the "running" client is a ghost — start a real one and retry.
+    # Finally, a client that is still logging in accepts the IPC and then
+    # silently drops the command, so every forward must be confirmed by
+    # visible download activity, not just a clean exit code.
     for attempt in range(1, args.forward_retries + 1):
         try:
             r = subprocess.run([wine, STEAM_EXE, "-silent", "+app_install", appid],
@@ -373,9 +376,19 @@ def cmd_steam_install(args):
             continue
         if r.returncode != 0:
             die(f"forwarding +app_install {appid} failed ({r.returncode})")
+        confirm_deadline = time.time() + 25
+        while time.time() < confirm_deadline:
+            snap = install_snapshot(prefix, appid)
+            if snap["state_flags"] is not None or snap["bytes_downloaded"] > 0:
+                break
+            time.sleep(2)
+        else:
+            print(f"mage: client dropped +app_install (attempt {attempt}); "
+                  "re-forwarding", file=sys.stderr)
+            continue
         break
     else:
-        die("Steam client never became ready to accept +app_install")
+        die("Steam client never acted on +app_install")
 
     if args.no_wait:
         print(json.dumps(install_snapshot(prefix, appid)))

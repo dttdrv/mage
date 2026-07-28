@@ -438,3 +438,34 @@ already removed from recipe, awaiting user confirmation.
   plus steamapps/downloading/<id> size, streams JSON progress lines.
   Verified live with appid 379720: no Steam window, no leftover wine
   processes. App game pages show Install + progress for owned games.
+
+## 2026-07-28 (pm): headless install hardening + MoltenVK PR 2788
+
+steam-install failure forensics (real download test, appid 612520):
+- Stale ActiveProcess registry pid after ungraceful wineserver -k makes
+  the CLI skip the client launch; forwards then hang (each spawns a
+  bootstrap that dies at the 30s timeout). Fixed: ghost detected on
+  first forward timeout -> real client started.
+- Second failure mode: client accepts the IPC while still logging in and
+  SILENTLY DROPS +app_install (console_log shows ExecCommandLine but no
+  download starts). Fixed: every forward must be confirmed by visible
+  activity (appmanifest StateFlags or downloading/ bytes) within 25s,
+  else re-forward.
+- Verified against the live client: `+find install` lists
+  `app_install - <appId> [volumeindex]`; forwarding it to a fully
+  logged-in client starts the download (content_log cache connections,
+  appmanifest created, bytes flowing). No Steam window at any point.
+- console_log.txt trick: start client with -console to make
+  ExecCommandLine and `+find <term>` output visible in logs/.
+
+MoltenVK: upstream PR 2788 (skip repeated draw-state finalization in
+indexed indirect batches) applied to vendor/MoltenVK MVKCmdDraw.mm,
+rebuilt via bin/build-moltenvk.sh, deployed to the wine install tree
+(lib/libMoltenVK{,.1,.1.4.2}.dylib, backups .pre-2788). NOTE: the
+vendor fork is NOT in git (gitignored); needs its own repo once it
+diverges beyond upstream patches.
+
+Data home: Steam bottle moved to
+~/Library/Application Support/Mage/bottles/steam (imported.json
+updated). DOOM 2016.app shell in ~/Applications is now empty of prefix
+and can be deleted.
