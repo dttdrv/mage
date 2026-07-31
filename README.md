@@ -1,8 +1,13 @@
 # Mage
 
 Free, open-source CrossOver alternative for Apple silicon. Runs Windows
-games through a patched Wine runtime and MoltenVK (Vulkan on Metal),
-with a native macOS app on top.
+games through a custom stack, with a native macOS app on top.
+
+The stack, all mapped to Mage:
+
+- Wiage: custom Wine build (patched for macOS 26+ and Apple silicon)
+- MageVK: custom MoltenVK build (Vulkan on Metal, ray tracing work)
+- DXage: custom DXVK build (Direct3D on Vulkan, planned)
 
 Requires macOS 26 or later.
 

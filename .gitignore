@@ -16,3 +16,9 @@ vendor/
 tools/computer-use/
 app/.build/
 docs/testing/
+
+# Stack source checkouts (large, managed locally)
+/magevk/
+/moltenvk/
+/spirv-cross/
+/sources/

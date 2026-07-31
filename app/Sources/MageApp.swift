@@ -924,8 +924,8 @@ struct SettingsView: View {
 
                 Section("About") {
                     LabeledContent("Mage", value: updater.currentVersion)
-                    LabeledContent("Wine runtime",
-                                   value: store.wineVersion.isEmpty ? "—" : store.wineVersion)
+                    LabeledContent("Wiage runtime",
+                                   value: store.wineVersionDisplay.isEmpty ? "—" : store.wineVersionDisplay)
                     HStack {
                         Button(updater.checking ? "Checking…" : "Check for Updates") {
                             Task { await updater.check(silent: false) }
@@ -938,8 +938,8 @@ struct SettingsView: View {
                                 .lineLimit(1)
                         }
                     }
-                    Text("Mage runs Windows games on Apple silicon using the "
-                         + "Mage Wine fork and the Mage MoltenVK fork.")
+                    Text("Mage runs Windows games on Apple silicon using Wiage, "
+                         + "its custom Wine build, and MageVK, its custom MoltenVK build.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -95,7 +95,7 @@ struct AdvancedView: View {
             LabeledContent("Runtime") {
                 Picker("Runtime", selection: $recipe.runtime) {
                     ForEach(store.runtimes) { runtime in
-                        Text(runtime.id).tag(runtime.id)
+                        Text(runtime.displayName).tag(runtime.id)
                     }
                 }
                 .labelsHidden()

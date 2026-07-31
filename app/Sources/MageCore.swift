@@ -44,6 +44,16 @@ struct RuntimeManifest: Codable, Identifiable, Hashable {
     var wine: String
     var wineserver: String?
     var notes: String?
+
+    /// User-facing name. Stack naming: Wiage = Mage's Wine build.
+    /// "mage-wine-11.13" -> "Wiage 11.13", "mage-wine-11.13-rt" -> "Wiage 11.13 RT".
+    var displayName: String {
+        guard id.hasPrefix("mage-wine-") else { return id }
+        var v = String(id.dropFirst("mage-wine-".count))
+        var suffix = ""
+        if v.hasSuffix("-rt") { v = String(v.dropLast(3)); suffix = " RT" }
+        return "Wiage \(v)\(suffix)"
+    }
 }
 
 struct Bottle: Identifiable, Hashable {
@@ -156,6 +166,14 @@ final class MageStore: ObservableObject {
     @Published var busy = false
     @Published var statusLine = ""
     @Published var wineVersion = ""
+
+    /// "wine-11.13 (Staging)" -> "Wiage 11.13".
+    var wineVersionDisplay: String {
+        var v = wineVersion
+        if v.hasPrefix("wine-") { v = String(v.dropFirst(5)) }
+        v = v.replacingOccurrences(of: " (Staging)", with: "")
+        return v.isEmpty ? "" : "Wiage \(v)"
+    }
     @Published var runningBottles: Set<String> = []
     @Published var prefixSizes: [String: String] = [:]
 
