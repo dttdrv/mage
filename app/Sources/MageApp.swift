@@ -924,7 +924,7 @@ struct SettingsView: View {
 
                 Section("About") {
                     LabeledContent("Mage", value: updater.currentVersion)
-                    LabeledContent("Wiage runtime",
+                    LabeledContent("Wine runtime",
                                    value: store.wineVersionDisplay.isEmpty ? "—" : store.wineVersionDisplay)
                     HStack {
                         Button(updater.checking ? "Checking…" : "Check for Updates") {

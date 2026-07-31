@@ -27,6 +27,7 @@ struct Recipe: Codable, Identifiable, Hashable {
     var title: String?
     var steamAppid: String?
     var runtime: String
+    var vulkanLibraryPath: String?
     var env: [String: String]?
     var fileChecks: [FileCheck]?
     var launch: [LaunchStep]?
@@ -35,6 +36,7 @@ struct Recipe: Codable, Identifiable, Hashable {
         case id, title, runtime, env, launch
         case steamAppid = "steam_appid"
         case fileChecks = "file_checks"
+        case vulkanLibraryPath = "vulkan_library_path"
     }
 }
 
@@ -261,6 +263,22 @@ final class MageStore: ObservableObject {
 
     var defaultRuntimeID: String {
         runtimes.first?.id ?? "mage-wine-11.13"
+    }
+
+    /// MageVK builds staged under dist/<name>/lib, for the per-game MoltenVK picker.
+    var moltenVKBuilds: [(name: String, path: String)] {
+        guard let root else { return [] }
+        let dist = root.appendingPathComponent("dist")
+        guard let dirs = try? FileManager.default.contentsOfDirectory(
+            at: dist, includingPropertiesForKeys: nil) else { return [] }
+        let fm = FileManager.default
+        return dirs.compactMap { dir in
+            let lib = dir.appendingPathComponent("lib")
+            guard fm.fileExists(atPath: lib.appendingPathComponent("libvulkan.1.dylib").path)
+                    || fm.fileExists(atPath: lib.appendingPathComponent("libMoltenVK.dylib").path)
+            else { return nil }
+            return (dir.lastPathComponent, "dist/\(dir.lastPathComponent)/lib")
+        }.sorted { $0.name < $1.name }
     }
 
     func runtimeManifest(_ id: String) -> RuntimeManifest? {
@@ -574,6 +592,7 @@ final class MageStore: ObservableObject {
             title: entry.title,
             steamAppid: appid,
             runtime: defaultRuntimeID,
+            vulkanLibraryPath: nil,
             env: Self.universalEnv,
             fileChecks: nil,
             launch: [

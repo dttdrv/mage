@@ -101,6 +101,18 @@ struct AdvancedView: View {
                 .labelsHidden()
             }
 
+            LabeledContent("MoltenVK") {
+                Picker("MoltenVK", selection: Binding(
+                    get: { recipe.vulkanLibraryPath ?? "" },
+                    set: { recipe.vulkanLibraryPath = $0.isEmpty ? nil : $0 })) {
+                    Text("Runtime default").tag("")
+                    ForEach(store.moltenVKBuilds, id: \.path) { build in
+                        Text(build.name).tag(build.path)
+                    }
+                }
+                .labelsHidden()
+            }
+
             LabeledContent("Wine prefix") {
                 HStack {
                     Text(prefixPath)

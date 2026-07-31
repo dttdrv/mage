@@ -46,6 +46,11 @@ def load_runtime(rid):
     rt["root"] = root
     if not (root / rt["wine"]).exists():
         die(f"runtime {rid}: {root / rt['wine']} does not exist")
+    if "vulkan_library_path" in rt:
+        vulkan_library_path = (MAGE_DIR / rt["vulkan_library_path"]).resolve()
+        if not vulkan_library_path.is_dir() or not (vulkan_library_path / "libvulkan.1.dylib").is_file():
+            die(f"runtime {rid}: {vulkan_library_path} does not contain libvulkan.1.dylib")
+        rt["vulkan_library_path"] = str(vulkan_library_path)
     return rt
 
 
@@ -89,6 +94,18 @@ def run_env(recipe, runtime, prefix):
     env["WINEPREFIX"] = str(prefix)
     env["CX_REPORT_REAL_USERNAME"] = "1"
     env["DYLD_FALLBACK_LIBRARY_PATH"] = str(runtime["root"] / "lib")
+    # MoltenVK selection: a recipe-level path wins over the runtime default,
+    # so Advanced settings can pin a game to a specific MageVK build.
+    vulkan_library_path = recipe.get("vulkan_library_path") or runtime.get("vulkan_library_path")
+    if vulkan_library_path:
+        p = Path(vulkan_library_path)
+        if not p.is_absolute():
+            p = (MAGE_DIR / p).resolve()
+        if not p.is_dir() or not ((p / "libvulkan.1.dylib").is_file()
+                                  or (p / "libMoltenVK.dylib").is_file()):
+            die(f"vulkan library path {p} contains neither "
+                "libvulkan.1.dylib nor libMoltenVK.dylib")
+        env["DYLD_LIBRARY_PATH"] = str(p)
     return env
 
 

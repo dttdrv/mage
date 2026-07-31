@@ -3,7 +3,14 @@
     "ROSETTA_ADVERTISE_AVX" : "1",
     "WINEDLLOVERRIDES" : "mscoree=d;mshtml=d",
     "WINEESYNC" : "0",
-    "WINEMSYNC" : "1"
+    "WINEMSYNC" : "1",
+    "MAGE_VK_DEVICE_ID" : "0x744C",
+    "MAGE_VK_DEVICE_NAME" : "AMD Radeon RX 7900 XTX",
+    "MAGE_VK_DRIVER_VERSION" : "0x00800156",
+    "MAGE_VK_VENDOR_ID" : "0x1002",
+    "MVK_CONFIG_ENABLE_EXPERIMENTAL_RAY_TRACING" : "1",
+    "SteamAppId" : "3017860",
+    "SteamGameId" : "3017860"
   },
   "id" : "doom-the-dark-ages",
   "launch" : [
@@ -22,15 +29,11 @@
       "then_wait" : 20
     },
     {
-      "args" : [
-        "-applaunch",
-        "3017860"
-      ],
       "background" : true,
-      "program" : "C:\\Program Files (x86)\\Steam\\steam.exe"
+      "program" : "C:\\Program Files (x86)\\Steam\\steamapps\\common\\DOOMTheDarkAges\\DOOMTheDarkAges.exe"
     }
   ],
-  "runtime" : "mage-wine-11.13",
+  "runtime" : "mage-wine-11.13-rt",
   "steam_appid" : "3017860",
   "title" : "DOOM: The Dark Ages"
 }
