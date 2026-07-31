@@ -86,6 +86,66 @@ The following required subgroup-operation and storage-buffer-alignment checks
 already pass. The minidump module list independently confirms that the game
 loaded `mage/dist/runtime-ray-icb/lib/libMoltenVK.1.4.3.dylib`.
 
+## Vertex-subgroup regression on the rt-minimal line (2026-07-31)
+
+The magevk `mage-rt-minimal` branch (2771 head + "Allow ray tracing without
+placement heaps" eefe7375 + its dirty working tree + 2788 + Mage config)
+launched the game past the vendor spoof (`mage: spoofing GPU identity`
+confirmed in log) and died with the SAME subgroup-stage fatal, dump
+`TitanSteam6OPL1SE3.dmp`:
+
+```text
+FATAL ERROR: Please update your driver: Could not find support for required subgroup stages
+```
+
+Root cause: the vertex-subgroup support never lived in the 2771/eefe7375
+line. It exists only as (a) a 2-file change in the ray-icb experiment tree
+(vertex bit in `populateSubgroupProperties`, fixed subgroup size for the
+plain vertex stage) and (b) 12 uncommitted lines in
+`sources/SPIRV-Cross-ray` on top of 62db8c83. The dirty rt-minimal import
+had also re-pinned SPIRV-Cross to upstream 6c09849f, which cannot emit
+vertex subgroups either.
+
+Fix ported into Mage-owned trees (all local, main project untouched):
+
+- magevk `mage-rt-minimal` @ 68cc22df: vertex stage bit (Apple GPU +
+  simdPermute + simdReduction) and vertex `fixed_subgroup_size`, SPIRV-Cross
+  pin restored to 62db8c83.
+- SPIRV-Cross `mage-vertex-subgroups` @ a2713ce7 (pushed to mage/spirv-cross):
+  the 12-line vertex subgroup emission change, committed with its test
+  shaders. Build uses `-DCPM_SPIRV-Cross_SOURCE=mage/sources/SPIRV-Cross-ray`.
+
+## Subgroup gate cleared; current gate is three features (2026-07-31)
+
+With the vertex-subgroup build deployed, the game passes vendor spoof, RT
+extension exposure, and the subgroup-stage check. vkCreateDevice then fails
+on exactly three requested features (verified by dumping the full
+requested/available feature arrays at the error site):
+
+- sparseBinding
+- sparseResidencyBuffer
+- shaderBufferInt64Atomics
+
+Everything else the game wants is covered: geometryShader and
+shaderCullDistance via the Mage fake flags, wideLines via a
+`MVK_USE_METAL_PRIVATE_API=ON` build (now the runtime default), and
+shaderResourceMinLod natively (it was never missing; earlier suspicion was
+a field-counting error during diagnosis, not a MoltenVK defect).
+
+Notes for whoever implements the rest:
+
+- shaderBufferInt64Atomics cannot be exposed honestly: Metal 4 on the
+  M5 Pro does not compile `atomic_ulong` device ops (verified with a
+  runtime-compiled MSL probe). It needs emulation in
+  MoltenVK/SPIRV-Cross or a game-level workaround.
+- sparseBinding/sparseResidencyBuffer: the 554-line vkQueueBindSparse
+  emulation experiment in `mage/sources/MoltenVK-ray-icb` was a start but
+  incomplete (the 2026-07-29 reviewed artifact still failed device
+  creation on these two). Faking the feature bits without working sparse
+  backing will crash the game at the first sparse operation.
+- The 2026-07-29 feature list in this document is confirmed accurate
+  (sparseBinding + sparseResidencyBuffer, not a minLod issue).
+
 ## Isolated vertex subgroup validation
 
 The required basic, vote, arithmetic, ballot, shuffle, and shuffle-relative
