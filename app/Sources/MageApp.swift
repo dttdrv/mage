@@ -242,7 +242,9 @@ struct GameCard: View {
 
                 if running {
                     HStack(spacing: 5) {
-                        Circle().fill(.green).frame(width: 6, height: 6)
+                        Image(systemName: "circle.fill")
+                            .font(.system(size: 6))
+                            .foregroundStyle(.green)
                             .symbolEffect(.pulse)
                         Text("Running")
                     }
@@ -293,21 +295,30 @@ struct GameDetailView: View {
     @EnvironmentObject private var store: MageStore
     let entry: LibraryEntry
     @State private var showAdvanced = false
-    @State private var showConsole = false
     @State private var appeared = false
 
-    private var bottle: Bottle? { entry.bottle }
+    /// Live entry from the store, so setup/install state updates in place
+    /// (the navigation path holds a stale value copy otherwise).
+    private var live: LibraryEntry {
+        store.library.first(where: { $0.id == entry.id }) ?? entry
+    }
+
+    private var bottle: Bottle? { live.bottle }
 
     var body: some View {
-        let artwork = store.artwork(for: entry)
+        let artwork = store.artwork(for: live)
         let running = bottle.map { store.runningBottles.contains($0.name) } ?? false
 
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     HeroHeader(
-                        title: entry.title, artwork: artwork, running: running,
-                        onPlay: bottle.map { b in { store.runCLI(["run", b.name]) } },
+                        title: live.title, artwork: artwork, running: running,
+                        onPlay: bottle.map { b in
+                            running
+                                ? { store.stopBottle(b) }
+                                : { store.runCLI(["run", b.name]) }
+                        },
                         playDisabled: store.busy,
                         playBusy: store.busy
                     )
@@ -318,47 +329,32 @@ struct GameDetailView: View {
                     .onAppear { withAnimation(.smooth(duration: 0.3)) { appeared = true } }
 
                     HStack(spacing: 10) {
-                        if let bottle {
+                        if bottle != nil {
                             Button("Advanced…") { showAdvanced = true }
                                 .buttonStyle(.glass)
                                 .buttonBorderShape(.capsule)
-
-                            Menu {
-                                Button("Dry run") {
-                                    store.runCLI(["run", bottle.name, "--dry-run"])
-                                }
-                                Button("Doctor…") { store.runCLI(["doctor", bottle.name]) }
-                                Divider()
-                                Button("Show launch log") { store.startLogTail(bottle.name) }
-                                Button("Reveal prefix in Finder") {
-                                    NSWorkspace.shared.selectFile(
-                                        nil, inFileViewerRootedAtPath: entry.prefix.path)
-                                }
-                                if let appid = entry.appid {
-                                    Divider()
-                                    Button("Open in Steam") {
-                                        store.openInSteam("steam://run/\(appid)",
-                                                          prefix: entry.prefix)
-                                    }
-                                }
-                            } label: {
-                                Label("More", systemImage: "ellipsis.circle")
-                            }
-                            .buttonStyle(.glass)
-                            .buttonBorderShape(.capsule)
-                            .disabled(store.busy)
-                        } else if entry.ownedOnly, let appid = entry.appid {
-                            if store.installStates[appid] != nil {
+                        } else if live.ownedOnly, let appid = live.appid {
+                            if let state = store.installStates[appid] {
                                 HStack(spacing: 10) {
-                                    if store.installStates[appid]?.active == true {
+                                    if state.active {
                                         ProgressView().controlSize(.small)
                                     }
                                     Text(store.installLabel(for: appid))
                                         .foregroundStyle(.secondary)
+                                    if !state.active {
+                                        Button {
+                                            store.dismissInstallState(for: appid)
+                                        } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(.tertiary)
+                                        .help("Dismiss")
+                                    }
                                 }
                                 .font(.callout)
                             } else {
-                                Button { store.installGame(entry) } label: {
+                                Button { store.installGame(live) } label: {
                                     Label("Install", systemImage: "arrow.down.circle")
                                 }
                                 .buttonStyle(.glassProminent)
@@ -366,22 +362,14 @@ struct GameDetailView: View {
                                 .controlSize(.large)
                                 .disabled(store.steamCapablePrefix == nil)
                             }
-                        } else if let appid = entry.appid {
-                            Button { store.setupWithMage(entry) } label: {
+                        } else if let appid = live.appid {
+                            Button { store.setupWithMage(live) } label: {
                                 Label("Set up with Mage", systemImage: "wand.and.stars")
                             }
                             .buttonStyle(.glassProminent)
                             .buttonBorderShape(.capsule)
                             .controlSize(.large)
                             .disabled(store.busy)
-
-                            Button {
-                                store.openInSteam("steam://run/\(appid)", prefix: entry.prefix)
-                            } label: {
-                                Label("Play via Steam", systemImage: "play.fill")
-                            }
-                            .buttonStyle(.glass)
-                            .buttonBorderShape(.capsule)
                         }
                         Spacer()
                     }
@@ -406,37 +394,24 @@ struct GameDetailView: View {
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
+                    if let bottle {
                         HStack(spacing: 10) {
-                            if let bottle {
-                                chip(store.prefixSizes[bottle.name] ?? "…",
-                                     icon: "internaldrive")
-                                if bottle.imported {
-                                    chip("imported", icon: "square.and.arrow.down")
-                                }
-                            }
-                            if let appid = entry.appid {
-                                chip("AppID \(appid)", icon: "number")
-                            }
+                            chip(live.steam?.sizeLabel
+                                 ?? store.prefixSizes[bottle.name] ?? "…",
+                                 icon: "internaldrive")
                             Spacer()
                         }
 
-                        Text(entry.prefix.path)
+                        Text(live.prefix.path)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-
-                    if showConsole || store.busy {
-                        ConsoleView()
-                            .frame(height: 240)
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
                 }
                 .padding(20)
-                .animation(.smooth(duration: 0.3), value: showConsole || store.busy)
+                .animation(.smooth(duration: 0.3), value: store.busy)
             }
 
             Divider()
@@ -446,14 +421,6 @@ struct GameDetailView: View {
                     ProgressView().controlSize(.small)
                         .transition(.opacity)
                 }
-                Button { showConsole.toggle() } label: {
-                    Label("Console", systemImage: showConsole ? "terminal.fill" : "terminal")
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.capsule)
-                .controlSize(.small)
-                .foregroundStyle(showConsole ? Color.accentColor : .primary)
-                .help("Show or hide the console")
                 Text(store.statusLine)
                     .lineLimit(1)
                 Spacer()
@@ -468,10 +435,18 @@ struct GameDetailView: View {
             .padding(.vertical, 8)
             .animation(.smooth(duration: 0.3), value: store.busy)
         }
-        .navigationTitle(entry.title)
+        .background { BannerBackground(hero: artwork.hero) }
+        .navigationTitle(live.title)
         .sheet(isPresented: $showAdvanced) {
             if let bottle, let recipe = store.recipe(for: bottle) {
-                AdvancedView(bottle: bottle, recipe: recipe)
+                AdvancedView(bottle: bottle, recipe: recipe, appid: live.appid)
+            }
+        }
+        .task {
+            store.downloadMissingArtwork(for: live)
+            if let bottle { store.loadPrefixSize(for: bottle) }
+            if let appid = live.appid {
+                store.fetchAchievementProgress(appid: appid)
             }
         }
     }
@@ -490,7 +465,7 @@ struct GameDetailView: View {
     /// counts from the bridge. Hidden unless signed in with data (or loading).
     @ViewBuilder
     private var progressBlock: some View {
-        if let appid = entry.appid, store.steamAuth.loggedIn {
+        if let appid = live.appid, store.steamAuth.loggedIn {
             let minutes = store.playtimes[appid] ?? 0
             let achievements = store.achievementProgress[appid]
             let pending = achievements == nil && !store.achievementFailed.contains(appid)
@@ -572,14 +547,18 @@ struct HeroHeader: View {
                                 .controlSize(.small)
                                 .frame(minWidth: 52)
                         } else {
-                            Label("Play", systemImage: "play.fill")
+                            Label(running ? "Close" : "Play",
+                                  systemImage: running ? "stop.fill" : "play.fill")
+                                .contentTransition(.symbolEffect(.replace))
                         }
                     }
                     .buttonStyle(.glassProminent)
                     .buttonBorderShape(.capsule)
                     .controlSize(.extraLarge)
+                    .tint(running ? .red : .accentColor)
                     .disabled(playDisabled)
                     .animation(.snappy(duration: 0.2), value: playBusy)
+                    .animation(.snappy(duration: 0.2), value: running)
                 }
             }
             .padding(18)
@@ -602,6 +581,73 @@ struct HeroHeader: View {
         }
         .animation(.snappy(duration: 0.25), value: running)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+}
+
+// MARK: - Banner background
+
+/// Mesh gradient sampled from the game's hero art, dimmed behind the detail
+/// page. Neutral wash when no local art exists yet.
+struct BannerBackground: View {
+    let hero: URL?
+    @State private var colors: [Color]?
+
+    private static let points: [SIMD2<Float>] = [
+        .init(0, 0), .init(0.5, 0), .init(1, 0),
+        .init(0, 1), .init(0.5, 1), .init(1, 1),
+    ]
+
+    var body: some View {
+        Group {
+            if let colors {
+                MeshGradient(width: 3, height: 2, points: Self.points, colors: colors)
+            } else {
+                LinearGradient(colors: [.indigo.opacity(0.3), .clear],
+                               startPoint: .top, endPoint: .bottom)
+            }
+        }
+        .opacity(0.28)
+        .saturation(1.25)
+        .ignoresSafeArea()
+        .animation(.smooth(duration: 0.6), value: colors == nil)
+        .task(id: hero) { sample() }
+    }
+
+    private func sample() {
+        guard let hero, hero.isFileURL else {
+            colors = nil
+            return
+        }
+        Task.detached(priority: .utility) {
+            let sampled = Self.sampleColors(url: hero, columns: 3, rows: 2)
+            await MainActor.run { colors = sampled }
+        }
+    }
+
+    /// Downscale the hero to a 3x2 bitmap and read one average color per cell.
+    nonisolated static func sampleColors(url: URL, columns: Int, rows: Int) -> [Color]? {
+        guard let image = NSImage(contentsOf: url),
+              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let ctx = CGContext(data: nil, width: columns, height: rows,
+                                  bitsPerComponent: 8, bytesPerRow: columns * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: columns, height: rows))
+        guard let base = ctx.data?.bindMemory(to: UInt8.self,
+                                              capacity: columns * rows * 4)
+        else { return nil }
+        var colors: [Color] = []
+        for y in 0..<rows {
+            for x in 0..<columns {
+                // CG rows run bottom-to-top; the mesh grid is top-to-bottom.
+                let i = ((rows - 1 - y) * columns + x) * 4
+                colors.append(Color(red: Double(base[i]) / 255,
+                                    green: Double(base[i + 1]) / 255,
+                                    blue: Double(base[i + 2]) / 255))
+            }
+        }
+        return colors
     }
 }
 
@@ -1036,7 +1082,7 @@ struct AddGameSheet: View {
     @State private var input = ""
 
     private var appid: String? {
-        if let match = input.range(of: #"\d{5,}"#, options: .regularExpression) {
+        if let match = input.range(of: #"\d+"#, options: .regularExpression) {
             return String(input[match])
         }
         return nil

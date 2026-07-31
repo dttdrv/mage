@@ -1,13 +1,13 @@
 {
   "env": {
+    "MAGE_LOG_CURSOR": "1",
     "MVK_CONFIG_FAKE_GEOMETRY_SHADER": "1",
     "MVK_CONFIG_FAKE_ROBUST_BUFFER_ACCESS_2": "1",
     "MVK_CONFIG_FAKE_SHADER_CULL_DISTANCE": "1",
     "ROSETTA_ADVERTISE_AVX": "1",
     "WINEDLLOVERRIDES": "mscoree=d;mshtml=d;d3d11=n;dxgi=n",
     "WINEESYNC": "0",
-    "WINEMSYNC": "1",
-    "MAGE_LOG_CURSOR": "1"
+    "WINEMSYNC": "1"
   },
   "file_checks": [
     {
@@ -19,6 +19,7 @@
   "launch": [
     {
       "args": [
+        "-silent",
         "-offline",
         "-noverifyfiles",
         "-nobootstrapupdate",

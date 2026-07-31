@@ -18,7 +18,7 @@ DEVELOPER_DIR = $(CURDIR)/../../toolchains/Xcode-27-beta-3/Xcode-beta.app/Conten
 $(BIN): $(SRC) Resources/Info.plist
 	mkdir -p $(APP)/Contents/MacOS
 	cp Resources/Info.plist $(APP)/Contents/Info.plist
-	swiftc $(SRC) -sdk $(SDK) -target arm64-apple-macos26.0 -framework AppKit -framework SwiftUI -o $(BIN)
+	swiftc $(SRC) -sdk $(SDK) -target arm64-apple-macos26.0 -O -framework AppKit -framework SwiftUI -o $(BIN)
 
 # Adaptive app icon: light (+ optional dark) 1024x1024 PNGs are the source of
 # truth — drop in replacements and `make` picks them up. render-icons.swift

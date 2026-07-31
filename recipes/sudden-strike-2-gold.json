@@ -1,32 +1,32 @@
 {
-  "env" : {
-    "MTL_HUD_ENABLED" : "1",
-    "ROSETTA_ADVERTISE_AVX" : "1",
-    "WINEDEBUG" : "-all",
-    "WINEDLLOVERRIDES" : "mscoree=d;mshtml=d",
-    "WINEESYNC" : "0",
-    "WINEMSYNC" : "1"
+  "env": {
+    "MTL_HUD_ENABLED": "1",
+    "ROSETTA_ADVERTISE_AVX": "1",
+    "WINEDEBUG": "-all",
+    "WINEDLLOVERRIDES": "mscoree=d;mshtml=d",
+    "WINEESYNC": "0",
+    "WINEMSYNC": "1"
   },
-  "id" : "sudden-strike-2-gold",
-  "launch" : [
+  "id": "sudden-strike-2-gold",
+  "launch": [
     {
-      "args" : [
-
+      "args": [
+        "-silent"
       ],
-      "background" : true,
-      "program" : "C:\\Program Files (x86)\\Steam\\steam.exe",
-      "then_wait" : 20
+      "background": true,
+      "program": "C:\\Program Files (x86)\\Steam\\steam.exe",
+      "then_wait": 20
     },
     {
-      "args" : [
+      "args": [
         "-applaunch",
         "612520"
       ],
-      "background" : true,
-      "program" : "C:\\Program Files (x86)\\Steam\\steam.exe"
+      "background": true,
+      "program": "C:\\Program Files (x86)\\Steam\\steam.exe"
     }
   ],
-  "runtime" : "mage-wine-11.13",
-  "steam_appid" : "612520",
-  "title" : "Sudden Strike 2 Gold"
+  "runtime": "mage-wine-11.13",
+  "steam_appid": "612520",
+  "title": "Sudden Strike 2 Gold"
 }

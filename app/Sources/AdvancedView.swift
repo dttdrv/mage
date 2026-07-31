@@ -8,12 +8,13 @@ struct AdvancedView: View {
     @Environment(\.dismiss) private var dismiss
 
     let bottle: Bottle
+    let appid: String?
     @State private var recipe: Recipe
     @State private var prefixPath: String
     @State private var switchStates: [String: Bool] = [:]
     @State private var frameCap: Int = 0
     @State private var envRows: [EnvRow] = []
-    @State private var steps: [LaunchStep] = []
+    @State private var steps: [StepRow] = []
 
     struct EnvRow: Identifiable {
         let id = UUID()
@@ -21,8 +22,16 @@ struct AdvancedView: View {
         var value: String
     }
 
-    init(bottle: Bottle, recipe: Recipe) {
+    /// LaunchStep wrapped with a stable identity so reorder/delete doesn't
+    /// desync TextField state (index-based ForEach does).
+    struct StepRow: Identifiable {
+        let id = UUID()
+        var step: LaunchStep
+    }
+
+    init(bottle: Bottle, recipe: Recipe, appid: String? = nil) {
         self.bottle = bottle
+        self.appid = appid
         _recipe = State(initialValue: recipe)
         _prefixPath = State(initialValue: bottle.prefix.path)
         var knownKeys = Set(MageStore.envSwitches.map(\.id))
@@ -37,7 +46,7 @@ struct AdvancedView: View {
             .filter { !knownKeys.contains($0.key) }
             .sorted { $0.key < $1.key }
             .map { EnvRow(key: $0.key, value: $0.value) })
-        _steps = State(initialValue: recipe.launch ?? [])
+        _steps = State(initialValue: (recipe.launch ?? []).map { StepRow(step: $0) })
     }
 
     var body: some View {
@@ -55,6 +64,8 @@ struct AdvancedView: View {
                     features
                     environment
                     launch
+                    tools
+                    console
                 }
                 .padding(.vertical, 4)
             }
@@ -90,6 +101,14 @@ struct AdvancedView: View {
                     get: { recipe.title ?? "" },
                     set: { recipe.title = $0.isEmpty ? nil : $0 }))
                 .textFieldStyle(.roundedBorder)
+            }
+
+            if let appid {
+                LabeledContent("Steam AppID") {
+                    Text(appid)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }
 
             LabeledContent("Runtime") {
@@ -232,7 +251,7 @@ struct AdvancedView: View {
             HStack {
                 sectionHeader("Launch steps", icon: "list.number")
                 Spacer()
-                Button { steps.append(LaunchStep(program: "", args: nil, background: true, thenWait: nil)) } label: {
+                Button { steps.append(StepRow(step: LaunchStep(program: "", args: nil, background: true, thenWait: nil))) } label: {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(.glass)
@@ -245,47 +264,48 @@ struct AdvancedView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(Array(steps.enumerated()), id: \.offset) { index, _ in
-                    stepRow(index)
+                ForEach($steps) { $row in
+                    stepRow($row)
                 }
             }
         }
     }
 
-    private func stepRow(_ index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func stepRow(_ row: Binding<StepRow>) -> some View {
+        let index = steps.firstIndex(where: { $0.id == row.id }) ?? 0
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text("\(index + 1).")
                     .font(.callout.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 18)
-                TextField("Program (e.g. C:\\…\\steam.exe)", text: $steps[index].program)
+                TextField("Program (e.g. C:\\…\\steam.exe)", text: row.step.program)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.callout, design: .monospaced))
                 Button { moveStep(index, by: -1) } label: { Image(systemName: "chevron.up") }
                     .buttonStyle(.plain).disabled(index == 0)
                 Button { moveStep(index, by: 1) } label: { Image(systemName: "chevron.down") }
                     .buttonStyle(.plain).disabled(index == steps.count - 1)
-                Button { steps.remove(at: index) } label: { Image(systemName: "minus.circle") }
+                Button { steps.removeAll { $0.id == row.id } } label: { Image(systemName: "minus.circle") }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 8) {
                 TextField("Arguments (space-separated)", text: Binding(
-                    get: { (steps[index].args ?? []).joined(separator: " ") },
-                    set: { steps[index].args = $0.isEmpty ? nil : $0.split(separator: " ").map(String.init) }))
+                    get: { (row.step.wrappedValue.args ?? []).joined(separator: " ") },
+                    set: { row.step.wrappedValue.args = $0.isEmpty ? nil : $0.split(separator: " ").map(String.init) }))
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.callout, design: .monospaced))
                     .padding(.leading, 26)
                 Toggle("Background", isOn: Binding(
-                    get: { steps[index].background ?? true },
-                    set: { steps[index].background = $0 }))
+                    get: { row.step.wrappedValue.background ?? true },
+                    set: { row.step.wrappedValue.background = $0 }))
                 .toggleStyle(.checkbox)
                 Text("then wait")
                     .foregroundStyle(.secondary)
                 TextField("0", text: Binding(
-                    get: { steps[index].thenWait.map(String.init) ?? "" },
-                    set: { steps[index].thenWait = Int($0) }))
+                    get: { row.step.wrappedValue.thenWait.map(String.init) ?? "" },
+                    set: { row.step.wrappedValue.thenWait = Int($0) }))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 44)
                 Text("s")
@@ -301,6 +321,53 @@ struct AdvancedView: View {
         let target = index + delta
         guard steps.indices.contains(index), steps.indices.contains(target) else { return }
         steps.swapAt(index, target)
+    }
+
+    // MARK: Tools (formerly the detail page's More menu)
+
+    private var tools: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("Tools", icon: "wrench.and.screwdriver")
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Button("Dry run") { store.runCLI(["run", bottle.name, "--dry-run"]) }
+                    Button("Doctor…") { store.runCLI(["doctor", bottle.name]) }
+                    Button("Show launch log") { store.startLogTail(bottle.name) }
+                }
+                HStack(spacing: 8) {
+                    Button("Reveal prefix in Finder") {
+                        NSWorkspace.shared.selectFile(
+                            nil, inFileViewerRootedAtPath: bottle.prefix.path)
+                    }
+                    if let appid {
+                        Button("Open in Steam") {
+                            store.openInSteam("steam://run/\(appid)", prefix: bottle.prefix)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
+            .disabled(store.busy)
+        }
+    }
+
+    // MARK: Console (live CLI output)
+
+    private var console: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                sectionHeader("Console", icon: "terminal")
+                Spacer()
+                Button("Clear") { store.logText = "" }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ConsoleView()
+                .frame(height: 180)
+        }
     }
 
     private func sectionHeader(_ title: String, icon: String) -> some View {
@@ -320,7 +387,7 @@ struct AdvancedView: View {
         }
         env[MageStore.frameRateCapKey] = frameCap == 0 ? nil : String(frameCap)
         recipe.env = env.isEmpty ? nil : env
-        recipe.launch = steps.isEmpty ? nil : steps.filter { !$0.program.isEmpty }
+        recipe.launch = steps.isEmpty ? nil : steps.map(\.step).filter { !$0.program.isEmpty }
         store.saveRecipe(recipe)
         if bottle.imported, prefixPath != bottle.prefix.path {
             store.setBottlePrefix(bottle, to: URL(fileURLWithPath: prefixPath))

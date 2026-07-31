@@ -80,7 +80,18 @@ struct SteamGame: Identifiable, Hashable {
     let installDir: String
     let prefix: URL
     let steamExeWin: String
+    /// Bytes on disk, from the manifest's SizeOnDisk.
+    var sizeOnDisk: Int64? = nil
     var id: String { appid }
+
+    /// Human-readable install size ("73.8 GB").
+    var sizeLabel: String? {
+        guard let sizeOnDisk, sizeOnDisk > 0 else { return nil }
+        let gb = Double(sizeOnDisk) / 1_073_741_824
+        return gb >= 1
+            ? String(format: "%.1f GB", gb)
+            : String(format: "%.0f MB", gb * 1024)
+    }
 }
 
 /// One card in the library: a mage bottle, or a Steam-installed game that
@@ -209,7 +220,6 @@ final class MageStore: ObservableObject {
         "WINEDEBUG": "-all",
         "WINEDLLOVERRIDES": "mscoree=d;mshtml=d",
         "ROSETTA_ADVERTISE_AVX": "1",
-        "MTL_HUD_ENABLED": "1",
     ]
 
     func load() {
@@ -310,18 +320,71 @@ final class MageStore: ObservableObject {
 
     // MARK: Artwork (Steam's local library cache inside the prefix)
 
+    /// Bumped after an on-demand artwork download lands, so views re-read files.
+    @Published var artworkStamp = UUID()
+
+    /// Alternate names Steam uses in librarycache for the same asset.
+    private static let artworkNames: [(keyPath: KeyPath<Artwork, URL?>, names: [String], cdn: String)] = [
+        (\Artwork.capsule, ["library_600x900.jpg"], "library_600x900.jpg"),
+        (\Artwork.hero, ["library_hero.jpg", "library_header.jpg", "header.jpg"], "library_hero.jpg"),
+        (\Artwork.logo, ["logo.png"], "logo.png"),
+        (\Artwork.header, ["header.jpg", "library_header.jpg"], "header.jpg"),
+    ]
+
     func artwork(appid: String?, prefix: URL) -> Artwork {
         guard let appid else { return Artwork() }
-        let dir = prefix.appendingPathComponent(
-            "drive_c/Program Files (x86)/Steam/appcache/librarycache/\(appid)")
-        func file(_ name: String) -> URL? {
-            let url = dir.appendingPathComponent(name)
-            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        let dir = Self.libraryCacheDir(appid: appid, prefix: prefix)
+        func file(_ names: [String]) -> URL? {
+            for name in names {
+                let url = dir.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) { return url }
+            }
+            return nil
         }
-        return Artwork(capsule: file("library_600x900.jpg"),
-                       hero: file("library_hero.jpg"),
-                       logo: file("logo.png"),
-                       header: file("header.jpg"))
+        return Artwork(capsule: file(["library_600x900.jpg"]),
+                       hero: file(["library_hero.jpg", "library_header.jpg", "header.jpg"]),
+                       logo: file(["logo.png"]),
+                       header: file(["header.jpg", "library_header.jpg"]))
+    }
+
+    private static func libraryCacheDir(appid: String, prefix: URL) -> URL {
+        prefix.appendingPathComponent(
+            "drive_c/Program Files (x86)/Steam/appcache/librarycache/\(appid)")
+    }
+
+    /// Fetch capsule/hero/logo from Steam's CDN into the prefix's librarycache
+    /// when the local cache lacks them (fresh installs often have only hash-named
+    /// files). No-op for ownedOnly entries, which already read straight from the CDN.
+    func downloadMissingArtwork(for entry: LibraryEntry) {
+        guard !entry.ownedOnly, let appid = entry.appid else { return }
+        let dir = Self.libraryCacheDir(appid: appid, prefix: entry.prefix)
+        let missing = Self.artworkNames.filter { kind in
+            !kind.names.contains {
+                FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path)
+            }
+        }
+        guard !missing.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            var downloaded = false
+            for kind in missing {
+                let source = URL(string:
+                    "https://cdn.cloudflare.steamstatic.com/steam/apps/\(appid)/\(kind.cdn)")
+                let target = dir.appendingPathComponent(kind.cdn)
+                guard let source else { continue }
+                guard let (tmp, response) = try? await URLSession.shared.download(from: source),
+                      (response as? HTTPURLResponse)?.statusCode == 200
+                else { continue }
+                try? FileManager.default.createDirectory(
+                    at: dir, withIntermediateDirectories: true)
+                try? FileManager.default.removeItem(at: target)
+                if (try? FileManager.default.moveItem(at: tmp, to: target)) != nil {
+                    downloaded = true
+                }
+            }
+            if downloaded {
+                await MainActor.run { self.artworkStamp = UUID() }
+            }
+        }
     }
 
     func artwork(for entry: LibraryEntry) -> Artwork {
@@ -346,8 +409,13 @@ final class MageStore: ObservableObject {
         return files.filter { $0.lastPathComponent.hasPrefix("appmanifest_") }
             .compactMap { Self.parseACF($0) }
             .filter { !Self.hiddenAppIDs.contains($0.appid) }
-            .map { SteamGame(appid: $0.appid, name: $0.name, installDir: $0.dir,
-                             prefix: prefix, steamExeWin: exe) }
+            .map { parsed in
+                var game = SteamGame(appid: parsed.appid, name: parsed.name,
+                                     installDir: parsed.dir,
+                                     prefix: prefix, steamExeWin: exe)
+                game.sizeOnDisk = parsed.sizeOnDisk
+                return game
+            }
             .sorted { $0.name < $1.name }
     }
 
@@ -355,9 +423,11 @@ final class MageStore: ObservableObject {
     private static let hiddenAppIDs: Set<String> = ["228980"] // Steamworks Common Redistributables
 
     /// Minimal KeyValues reader: first occurrence of each top-level pair.
-    nonisolated static func parseACF(_ url: URL) -> (appid: String, name: String, dir: String)? {
+    nonisolated static func parseACF(_ url: URL) -> (
+        appid: String, name: String, dir: String, sizeOnDisk: Int64?
+    )? {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        var appid: String?, name: String?, dir: String?
+        var appid: String?, name: String?, dir: String?, size: Int64?
         for line in text.split(separator: "\n") {
             let parts = line.split(separator: "\"", omittingEmptySubsequences: false)
             // lines look like: \t"appid"\t\t"379720"
@@ -367,11 +437,12 @@ final class MageStore: ObservableObject {
             case "appid" where appid == nil: appid = value
             case "name" where name == nil: name = value
             case "installdir" where dir == nil: dir = value
+            case "SizeOnDisk" where size == nil: size = Int64(value)
             default: break
             }
         }
         guard let appid, let name else { return nil }
-        return (appid, name, dir ?? name)
+        return (appid, name, dir ?? name, size)
     }
 
     private func buildLibrary() -> [LibraryEntry] {
@@ -395,37 +466,60 @@ final class MageStore: ObservableObject {
         return entries.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
-    // MARK: Running-state detection (exe names from recipe launch steps)
+    // MARK: Running-state detection (game processes inside the bottle's prefix)
 
     func refreshRunning() {
-        let checks: [(String, [String])] = bottles.map { bottle in
-            let exes = (recipe(for: bottle)?.launch ?? [])
+        struct Watch {
+            let bottle: String
+            let prefix: String
+            let needles: [String] // matched against the full ps line (args + env)
+        }
+        let watches: [Watch] = bottles.map { bottle in
+            var needles: [String] = []
+            // Steam recipes: the game exe lands under steamapps\common\<installDir>;
+            // steam.exe itself must never count (a silent client idles 24/7).
+            if let appid = recipe(for: bottle)?.steamAppid,
+               let game = steamGames(in: bottle.prefix).first(where: { $0.appid == appid }) {
+                needles.append("steamapps\\common\\\(game.installDir)\\")
+            }
+            // Non-Steam recipes: real program names from the launch steps.
+            needles += (recipe(for: bottle)?.launch ?? [])
                 .map { ($0.program as NSString).lastPathComponent }
-                .filter { !$0.isEmpty }
-            return (bottle.name, exes)
+                .filter { !$0.isEmpty && $0.lowercased() != "steam.exe" }
+            return Watch(bottle: bottle.name, prefix: bottle.prefix.path, needles: needles)
         }
         Task.detached {
+            let lines = Self.psEnvironmentLines()
             var running = Set<String>()
-            for (name, exes) in checks {
-                for exe in exes where Self.pgrepRunning(exe) {
-                    running.insert(name)
-                    break
+            for watch in watches where !watch.needles.isEmpty {
+                for line in lines {
+                    // ps e appends the environment; WINEPREFIX pins a process
+                    // to its bottle's prefix.
+                    guard line.contains("WINEPREFIX=\(watch.prefix)") else { continue }
+                    if watch.needles.contains(where: {
+                        line.localizedCaseInsensitiveContains($0)
+                    }) {
+                        running.insert(watch.bottle)
+                        break
+                    }
                 }
             }
             await MainActor.run { self.runningBottles = running }
         }
     }
 
-    nonisolated private static func pgrepRunning(_ exe: String) -> Bool {
-        let escaped = exe.replacingOccurrences(of: ".", with: "\\.")
+    /// Full command line + environment for every process, one per line.
+    nonisolated private static func psEnvironmentLines() -> [String] {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        process.arguments = ["-fi", escaped]
-        process.standardOutput = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["axwwweo", "command"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
         process.standardError = Pipe()
-        guard (try? process.run()) != nil else { return false }
+        guard (try? process.run()) != nil else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return process.terminationStatus == 0
+        return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
     }
 
     // MARK: Prefix size (background, cached)
@@ -480,9 +574,11 @@ final class MageStore: ObservableObject {
         runCLI(args, thenReload: true)
     }
 
-    /// Kill every wineserver we know about (one per runtime). This is the
-    /// only reliable way to reap a whole Wine session — pkill misses
-    /// service processes whose command lines don't contain "wine".
+    /// Kill every wineserver we know about (one per runtime), for each prefix
+    /// in use. wineserver -k only targets the session named by WINEPREFIX, so
+    /// the prefix must be passed explicitly. This is the only reliable way to
+    /// reap a whole Wine session — pkill misses service processes whose
+    /// command lines don't contain "wine".
     func killAllWine() {
         guard let root else { return }
         statusLine = "Stopping all Wine sessions…"
@@ -494,9 +590,13 @@ final class MageStore: ObservableObject {
                 ?? (rt.wine as NSString).deletingLastPathComponent + "/wineserver"
             return rtRoot.appendingPathComponent(rel)
         }
+        let prefixes = Array(Set(bottles.map(\.prefix.path)))
         Task {
             for server in servers where FileManager.default.fileExists(atPath: server.path) {
-                _ = await Self.exec(server, ["-k"]) { _ in }
+                for prefix in prefixes {
+                    _ = await Self.exec(server, ["-k"],
+                                        env: ["WINEPREFIX": prefix]) { _ in }
+                }
             }
             Task { @MainActor in
                 self.statusLine = "All Wine sessions stopped"
@@ -596,7 +696,7 @@ final class MageStore: ObservableObject {
             env: Self.universalEnv,
             fileChecks: nil,
             launch: [
-                LaunchStep(program: steam.steamExeWin, args: [],
+                LaunchStep(program: steam.steamExeWin, args: Self.steamSilentArgs,
                            background: true, thenWait: 20),
                 LaunchStep(program: steam.steamExeWin,
                            args: ["-applaunch", appid],
@@ -605,6 +705,12 @@ final class MageStore: ObservableObject {
         saveRecipe(recipe)
         install(recipe: id, name: nil, importPrefix: entry.prefix)
     }
+
+    /// Steam client flags that keep it fully in the background (mirrors
+    /// STEAM_SILENT_ARGS in bin/mage).
+    static let steamSilentArgs = ["-silent", "-nobootstrapupdate",
+                                  "-skipinitialbootstrap", "-noverifyfiles",
+                                  "-cef-disable-gpu", "-cef-disable-gpu-compositing"]
 
     // MARK: Steam actions (install/run URLs inside the bottle's Steam)
 
@@ -618,9 +724,13 @@ final class MageStore: ObservableObject {
     }
 
     /// Fire a steam:// URL (install, run) through the bottle's Steam client.
-    /// Fire-and-forget: forwards to the running client or starts it.
+    /// Fire-and-forget: forwards to the running client or starts it silently.
     func openInSteam(_ urlString: String, prefix: URL) {
-        guard let wine = runtimeWineURL(defaultRuntimeID) else {
+        // Drive the client with the runtime the bottle's recipe pins, not the
+        // global default — mixing wine builds in one prefix breaks wineserver.
+        let runtimeID = bottles.first(where: { $0.prefix == prefix })
+            .flatMap { recipe(for: $0)?.runtime } ?? defaultRuntimeID
+        guard let wine = runtimeWineURL(runtimeID) else {
             statusLine = "no runtime available"
             return
         }
@@ -631,6 +741,7 @@ final class MageStore: ObservableObject {
         env["WINEPREFIX"] = prefix.path
         env["WINEDEBUG"] = "-all"
         env["WINEDLLOVERRIDES"] = "mscoree=d;mshtml=d"
+        env["MAGE_APP_NAME"] = "Steam"
         env["DYLD_FALLBACK_LIBRARY_PATH"] = wine.deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("lib").path
         Task {
@@ -642,11 +753,17 @@ final class MageStore: ObservableObject {
                                     ["steam-wrapper", prefix.path])
             }
             await Self.exec(wine,
-                            ["C:\\Program Files (x86)\\Steam\\steam.exe", urlString],
+                            ["C:\\Program Files (x86)\\Steam\\steam.exe"]
+                                + Self.steamSilentArgs + [urlString],
                             env: env) { [weak self] chunk in
                 Task { @MainActor in self?.logText += chunk }
             }
         }
+    }
+
+    /// Stop a running bottle (game, launchers, Steam in its prefix).
+    func stopBottle(_ bottle: Bottle) {
+        runCLI(["stop", bottle.name])
     }
 
     // MARK: Steam account + owned games (stdlib Python bridge in tools/steam-bridge)
@@ -934,6 +1051,13 @@ final class MageStore: ObservableObject {
                 installStates[appid] = state
                 statusLine = state.message ?? ""
             }
+        }
+    }
+
+    /// Clear a finished/dismissed install notice so the user can retry.
+    func dismissInstallState(for appid: String) {
+        if installStates[appid]?.active == false {
+            installStates.removeValue(forKey: appid)
         }
     }
 

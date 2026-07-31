@@ -204,7 +204,9 @@ def ensure_steam_wrapper(prefix):
     target_is_wrapper = WRAPPER_MARKER in tbytes
     if real.is_file() and WRAPPER_MARKER in real.read_bytes():
         # corrupted backup (would fork-loop) — quarantine it
-        real.rename(cef / "steamwebhelper_real.CORRUPT-do-not-use.exe")
+        quarantine = cef / "steamwebhelper_real.CORRUPT-do-not-use.exe"
+        quarantine.unlink(missing_ok=True)
+        real.rename(quarantine)
         print("mage: warning: steamwebhelper_real.exe was a wrapper build "
               "(would crash-loop); quarantined", file=sys.stderr)
     if tbytes != wbytes:
@@ -463,6 +465,25 @@ def cmd_steam_install(args):
         time.sleep(3)
 
 
+def cmd_stop(args):
+    """Stop everything running in a bottle's prefix (game, launchers, Steam)."""
+    meta, prefix = find_bottle(args.name)
+    recipe = load_recipe(meta["recipe"])
+    runtime = load_runtime(recipe["runtime"])
+    env = run_env(recipe, runtime, prefix)
+    rel = runtime.get("wineserver") or str(Path(runtime["wine"]).parent / "wineserver")
+    server = runtime["root"] / rel
+    if not server.exists():
+        die(f"runtime {recipe['runtime']}: {server} does not exist")
+    r = subprocess.run([str(server), "-k"], env=env)
+    if r.returncode:
+        # wineserver -k exits non-zero when no session is alive for the
+        # prefix — stopping a stopped bottle is a no-op, not an error.
+        print(f"mage: nothing running for '{args.name}'")
+        return
+    print(f"mage: stopped '{args.name}'")
+
+
 def cmd_doctor(args):
     meta, prefix = find_bottle(args.name)
     recipe = load_recipe(meta["recipe"])
@@ -508,6 +529,9 @@ def main():
     pr.add_argument("name")
     pr.add_argument("--dry-run", action="store_true")
     pr.set_defaults(fn=cmd_run)
+    pk = sub.add_parser("stop", help="kill every Wine process in a bottle's prefix")
+    pk.add_argument("name")
+    pk.set_defaults(fn=cmd_stop)
     pd = sub.add_parser("doctor")
     pd.add_argument("name")
     pd.set_defaults(fn=cmd_doctor)

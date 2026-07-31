@@ -127,26 +127,17 @@ def persona_name(steamid):
 
 
 def cmd_status(_args):
+    """Offline only: session file + JWT exp. No network — a transient outage
+    must never flip a signed-in user to signed-out. Online validity is
+    proven lazily by 'owned'/'progress' calls."""
     session = load_session()
     if not session:
         emit({'status': 'ok', 'logged_in': False})
     if token_expired(session['token']):
         emit({'status': 'ok', 'logged_in': False, 'message': EXPIRED_MESSAGE})
-    try:
-        fetch_owned(session, include_appinfo=False)
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            emit({'status': 'ok', 'logged_in': False, 'message': EXPIRED_MESSAGE})
-        emit({'status': 'ok', 'logged_in': False,
-              'message': 'Steam returned HTTP %d' % e.code})
-    except (urllib.error.URLError, OSError, ValueError):
-        emit({'status': 'ok', 'logged_in': False, 'message': NETWORK_MESSAGE})
-    try:
-        name = persona_name(session['steamid'])
-    except Exception:
-        name = 'Steam user'
+    account = session.get('account') or 'Steam user'
     emit({'status': 'ok', 'logged_in': True,
-          'account': name,
+          'account': account,
           'steam_id': session['steamid']})
 
 
@@ -159,7 +150,10 @@ def cmd_owned(args):
 
     if not args.refresh:
         cache = read_json(CACHE_FILE)
-        if cache and time.time() - cache.get('timestamp', 0) < CACHE_TTL_SECONDS:
+        # Keyed by account: a different sign-in must never see the
+        # previous user's library.
+        if (cache and cache.get('steamid') == session['steamid']
+                and time.time() - cache.get('timestamp', 0) < CACHE_TTL_SECONDS):
             emit({'status': 'ok', 'games': cache.get('games', [])})
 
     try:
@@ -181,7 +175,15 @@ def cmd_owned(args):
              for g in response.get('games') or []
              if g.get('appid') and g.get('name')]
     games.sort(key=lambda g: g['name'].lower())
-    write_json(CACHE_FILE, {'timestamp': time.time(), 'games': games})
+    write_json(CACHE_FILE, {'timestamp': time.time(),
+                            'steamid': session['steamid'], 'games': games})
+    # Remember the persona name for offline 'status' reads.
+    if not session.get('account'):
+        try:
+            session['account'] = persona_name(session['steamid'])
+            write_json(SESSION_FILE, session)
+        except Exception:
+            pass
     emit({'status': 'ok', 'games': games})
 
 
