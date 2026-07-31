@@ -44,20 +44,44 @@ every session boundary.
 
 ## Findings
 
-- 2026-07-31 (O3, static): the Wiage toolchain's wined3d has only the GL
-  backend (no wined3d Vulkan: strings show wined3d_adapter_gl_* and GL
-  context fallback paths only). Sudden Strike 2 therefore renders via
-  wined3d → macOS OpenGL (4.1, deprecated) under Rosetta — a known-slow
-  path for 2D-era games with heavy surface locks/blits. DXVK/DXage does
-  not cover DirectDraw. Candidate remedies, cheapest first: (a) Wine
-  registry renderer/GDI toggles as an A/B experiment; (b) a recipe-managed
-  DDraw wrapper (cnc-ddraw is open source; dgVoodoo2 redistribution needs
-  a license check) translating to D3D11 → DXVK → MageVK. No change made
-  yet — needs the render-path confirmation from measurement step 2 first.
+- 2026-07-31 (F1, toolchain Vulkan wiring, verified): the install tree's
+  libvulkan.1.dylib symlinks (`lib/` and `lib/wine/x86_64-unix/`) point to
+  the local fat (x86_64+arm64) libMoltenVK.dylib with 2788 + frame cap +
+  FAKE flags. The BUILD.md warning about gcenx / arm64-only targets is
+  stale. Pre-2788 backups sit alongside as `*.pre-2788`.
+- 2026-07-31 (F2, msync, verified): msync is already Mage-default-on in
+  both `dlls/ntdll/unix/msync.c` and `server/msync.c`
+  (`WINEMSYNC=0` opts out), and the deployed ntdll.so / wineserver
+  postdate that patch (build-tree == install-tree, cmp-verified).
+  Recipes still set `WINEMSYNC=1` explicitly — harmless. Runtime probe
+  (launch without the env, expect "msync: up and running.") pending an
+  unlocked machine.
+- 2026-07-31 (F3, wined3d, verified): wined3d.dll in the deployed
+  toolchain DOES contain the Vulkan renderer (221 vk symbols,
+  adapter_vk.c, wined3d_adapter_vk_create). The earlier GL-only claim
+  below was wrong — see Falsified. SS2 can therefore be A/B tested on
+  `HKCU\Software\Wine\Direct3D renderer=vulkan` (wined3d → winevulkan →
+  MageVK) vs the default GL path, plus `HKCU\Software\Wine\DirectDraw
+  renderer=gdi` for the 2D blit path. Registry-only, recipe-managed,
+  no new DLLs. This is now the cheapest O3 experiment; measurement step 2
+  stands.
+- 2026-07-31 (F4, build flags): toolchain built with `-g -O2` (Wine
+  default), llvm-mingw for PE, clang for unix. No -O3/LTO anywhere.
+  Possible later experiment; not a first move.
+- 2026-07-31 (F5, QoS patch): the thread-priority → pthread-QoS patch
+  remains in the build tree but reverted from the install tree after
+  measured no-gain (86.2 vs 88.0 FPS, noise). Do not redeploy without a
+  new measurement case.
+- 2026-07-31 (F6, DXVK/dxage): confirmed absent — the toolchain ships
+  stock Wine PE d3d8-12/dxgi/ddraw. DXage does not exist yet. Any DXVK
+  adoption is a future, separately-planned work item (per-game override
+  via WINEDLLOVERRIDES, recipe-managed), not part of the current audit.
 
 ## Falsified / rejected
 
-(none yet)
+- 2026-07-31: "wined3d has only the GL backend" (earlier revision of the
+  O3 finding). Falsified by full symbol scan — the Vulkan renderer is
+  compiled in; only the default selection is GL. Corrected as F3.
 
 ## Explicit prohibitions
 
