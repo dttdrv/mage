@@ -208,3 +208,72 @@ After the launch, the unchanged staged RT probe still passed device creation and
 operations `0x6ff`, and size 32. Steam and wineserver were not stopped. The
 latest `BsSndRpt64.exe` reporter still owns AppID `3017860`; do not relaunch
 until it exits normally.
+
+## 2026-07-31: launcher GPU gate fully mapped and passed
+
+idTechLauncher ("Raytracing Incompatible GPU" dialog) gates on Vulkan data
+only. Its full probe: vkCreateInstance + device extension enumeration +
+vkGetPhysicalDeviceProperties x2, then vkDestroyInstance and the dialog.
+No DXGI, no registry GPU reads, no feature queries. Four separate blockers
+were found and fixed, in order:
+
+1. winevulkan loader returned NULL from vkGetDeviceProcAddr for device
+   functions whose extension is not enabled on that device. Real drivers
+   return non-NULL thunks regardless. The game resolves the RT procs on an
+   8-extension probe device, caches them in .data globals, and later calls
+   through NULL during streaming (both minidumps: call [rip+0x3cc1e70] at
+   exe RVA 0xc84112, 0xc0000005). Fixed in wiage: loader.c falls back to
+   wine_vk_get_device_proc_addr with a WARN. 329 device functions resolved
+   for the game on the next boot, including the full RT set.
+2. wine was loading a stale Jul-28 libMoltenVK: install/lib/libMoltenVK.dylib
+   was never updated when dist/runtime-ray-icb was, and
+   install/lib/libMoltenVK.1.dylib was a real file (1.4.2) shadowing the
+   canonical install name. Both now point at the current build. Deploy
+   MoltenVK to BOTH dist/runtime-ray-icb/lib and the wine install lib.
+3. VkPhysicalDeviceProperties gate fields: vendorID/deviceID/deviceName/
+   driverVersion spoofed via MAGE_VK_* (magevk, post-init so Metal feature
+   detection stays Apple); deviceType must be DISCRETE (dedicated-VRAM
+   check), set via MAGE_VK_DEVICE_TYPE=2; sparseBinding and
+   sparseResidency* features + sparseProperties reported with
+   MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS=1 (the game requests sparseBinding
+   and sparseResidencyBuffer at vkCreateDevice).
+4. wine itself replaced deviceName: win32u get_physical_device_properties2
+   overwrites it from the display-device list ("Apple M5 Pro"), discarding
+   the MoltenVK spoof. win32u/vulkan.c now honors MAGE_VK_DEVICE_NAME.
+   This was the last gate: with it the launcher saw vendor 0x1002,
+   device 0x744C, discrete, driver 0x800156, "AMD Radeon RX 7900 XTX",
+   sparse residency reported.
+
+Build gotcha that cost one cycle: overwriting a loaded dylib in place with
+cp invalidates its cached code signature (kernel: rejecting invalid page,
+cs_mtime != mtime, process killed: 9). Re-sign after in-place deploys:
+codesign --sign - --force <dylib>.
+
+## 2026-08-01 — RT gate root-caused and passed; game boots and presents
+
+The launcher's "Raytracing Incompatible GPU" dialog had one final, non-obvious
+condition: after checking the 5 required device extensions (deferred_host_operations,
+pipeline_library, ray_tracing_pipeline, acceleration_structure, ray_query), it calls
+vkGetPhysicalDeviceFormatProperties2 for VK_FORMAT_R16G16B16A16_UNORM (91) and
+requires bufferFeatures bit 29 — VK_FORMAT_FEATURE_2_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR.
+Windows drivers set that bit on the UNORM formats; magevk only mapped the six
+spec-legal AS vertex formats, so the bit read 0 and the launcher bailed.
+Fix: magevk commit 54f381b8 (branch mage-rt-rayquery) maps R16G16_UNORM and
+R16G16B16A16_UNORM to MTLAttributeFormatUShort{2,4}Normalized.
+
+With that, the launcher passes the gate, spawns DOOMTheDarkAges.exe, and the game
+creates a device with acceleration_structure + ray_query + ray_tracing_pipeline
+enabled, submits work, and presents frames (vkQueuePresentKHR). One non-fatal
+warn: the game asks for the 5th VkPhysicalDeviceRayTracingPipelineFeaturesKHR flag
+(rayTracingPipelineTraceRaysIndirect) which magevk does not expose; the game
+continues without it.
+
+The launcher also probes D3DKMT: D3DKMTEnumAdapters2 (matches the Vulkan
+deviceLUID against KMT adapter LUIDs — wine's are consistent) and
+D3DKMTQueryAdapterInfo(KMTQAITYPE_WDDM_2_7_CAPS=70), which wine did not implement
+(STATUS_NOT_IMPLEMENTED; gracefully skipped by the launcher, but now implemented
+in win32u/d3dkmt.c anyway).
+
+Housekeeping: the recipe no longer sets WINEDEBUG=+vulkan /
+MVK_CONFIG_TRACE_VULKAN_CALLS / MVK_CONFIG_SHADER_DUMP_DIR — the +vulkan trace
+grew the mage log to 8.5 GB in one session and filled the disk mid-build.
