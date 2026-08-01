@@ -59,7 +59,9 @@ def pids_of_interest():
 
 
 def gpu_stats():
-    raw = sh(["/usr/sbin/ioreg", "-l"])
+    # narrow query: full `ioreg -l` is slow enough to blow the timeout
+    # under game load (returned "" -> all-None metrics in the first run)
+    raw = sh(["/usr/sbin/ioreg", "-r", "-c", "IOAccelerator"])
     m = re.search(r'"PerformanceStatistics" = \{([^}]*)\}', raw)
     if not m:
         return {}
