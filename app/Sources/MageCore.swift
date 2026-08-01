@@ -474,7 +474,7 @@ final class MageStore: ObservableObject {
         struct Watch {
             let bottle: String
             let prefix: String
-            let needles: [String] // matched against the full ps line (args + env)
+            let needles: [String] // matched against the process title
         }
         let watches: [Watch] = bottles.map { bottle in
             var needles: [String] = []
@@ -485,25 +485,35 @@ final class MageStore: ObservableObject {
                 needles.append("steamapps\\common\\\(game.installDir)\\")
             }
             // Non-Steam recipes: real program names from the launch steps.
+            // lastPathComponent only splits "/", so split on both separators —
+            // otherwise the steam.exe filter below never fires.
             needles += (recipe(for: bottle)?.launch ?? [])
-                .map { ($0.program as NSString).lastPathComponent }
+                .map { $0.program.split(whereSeparator: { $0 == "\\" || $0 == "/" }).last.map(String.init) ?? "" }
                 .filter { !$0.isEmpty && $0.lowercased() != "steam.exe" }
             return Watch(bottle: bottle.name, prefix: bottle.prefix.path, needles: needles)
         }
         Task.detached {
+            // Wine PE processes clobber argv/environ on macOS: ps shows their
+            // Windows title but no environment, so WINEPREFIX matching cannot
+            // pin them to a bottle. Instead: title match gives candidates,
+            // then an lsof open-file probe pins candidates to the prefix
+            // (same trick as `mage stop`'s reaper).
             let lines = Self.psEnvironmentLines()
             var running = Set<String>()
             for watch in watches where !watch.needles.isEmpty {
+                var candidates: [Int] = []
                 for line in lines {
-                    // ps e appends the environment; WINEPREFIX pins a process
-                    // to its bottle's prefix.
-                    guard line.contains("WINEPREFIX=\(watch.prefix)") else { continue }
+                    guard let sp = line.firstIndex(of: " "),
+                          let pid = Int(line[line.startIndex..<sp]) else { continue }
                     if watch.needles.contains(where: {
                         line.localizedCaseInsensitiveContains($0)
                     }) {
-                        running.insert(watch.bottle)
-                        break
+                        candidates.append(pid)
                     }
+                }
+                if !candidates.isEmpty,
+                   Self.anyProcess(candidates, hasOpenFileUnder: watch.prefix) {
+                    running.insert(watch.bottle)
                 }
             }
             await MainActor.run { self.runningBottles = running }
@@ -522,6 +532,27 @@ final class MageStore: ObservableObject {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return String(decoding: data, as: UTF8.self).split(separator: "\n").map(String.init)
+    }
+
+    /// True when any of the given pids holds an open file strictly under
+    /// `prefix` (lsof -Fn: p<pid> / n<path> records).
+    nonisolated private static func anyProcess(_ pids: [Int], hasOpenFileUnder prefix: String) -> Bool {
+        guard !pids.isEmpty else { return false }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-a", "-Fn", "-p", pids.map(String.init).joined(separator: ",")]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return false }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return false }
+        let out = String(decoding: data, as: UTF8.self)
+        let base = prefix.hasSuffix("/") ? prefix : prefix + "/"
+        return out.split(separator: "\n").contains { line in
+            line.hasPrefix("n") && line.dropFirst().hasPrefix(base)
+        }
     }
 
     // MARK: Prefix size (background, cached)

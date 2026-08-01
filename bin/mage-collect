@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""mage-collect — bounded, full-spectrum runtime data collector for a Mage game.
+
+Captures per-tick: CPU/RSS/threads per wine process of interest, GPU
+utilization + driver memory (IOAccelerator PerformanceStatistics), memory
+pressure (vm_stat), and periodic `sample` stack aggregations. Everything is
+aggregated in memory; disk gets one JSON-lines log (rotated, capped) plus a
+final summary. Total footprint stays in the low MB no matter how long it runs.
+
+Usage:
+  bin/mage-collect <bottle-name> [duration-seconds]   # default 600s
+  bin/mage-collect --stop                             # stop a running collector early
+
+Output: $TMPDIR/mage-collect-<name>.jsonl (capped), $TMPDIR/mage-collect-<name>-summary.txt
+"""
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from collections import Counter
+
+INTEREST = ("DOOMTheDarkAges", "idTechLauncher", "steamwebhelper", "steam.exe",
+            "wineserver", "winedevice")
+TICK = 2.0            # metric tick seconds
+SAMPLE_EVERY = 30.0   # stack sample interval seconds
+SAMPLE_SECS = 2       # per-sample duration
+LOG_CAP = 16 * 1024 * 1024  # jsonl rotation cap
+
+
+def sh(args):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return ""
+
+
+def pids_of_interest():
+    out = {}
+    # macOS ps has no thread-count keyword; ps axM lists one line per thread.
+    nthreads = Counter()
+    for line in sh(["/bin/ps", "axM"]).splitlines()[1:]:
+        parts = line.split(None, 1)
+        if parts and parts[0].isdigit():
+            nthreads[int(parts[0])] += 1
+    for line in sh(["/bin/ps", "axwo", "pid,%cpu,%mem,rss,comm"]).splitlines()[1:]:
+        parts = line.split(None, 4)
+        if len(parts) < 5:
+            continue
+        pid, cpu, mem, rss, comm = parts
+        if any(k.lower() in comm.lower() for k in INTEREST):
+            name = next(k for k in INTEREST if k.lower() in comm.lower())
+            out[int(pid)] = dict(name=name, cpu=float(cpu), mem=float(mem),
+                                 rss_kb=int(rss), threads=nthreads.get(int(pid), 0))
+    return out
+
+
+def gpu_stats():
+    raw = sh(["/usr/sbin/ioreg", "-l"])
+    m = re.search(r'"PerformanceStatistics" = \{([^}]*)\}', raw)
+    if not m:
+        return {}
+    body = m.group(1)
+    def num(key):
+        mm = re.search(rf'"{re.escape(key)}"=(\d+)', body)
+        return int(mm.group(1)) if mm else None
+    return dict(device_util=num("Device Utilization %"),
+                renderer_util=num("Renderer Utilization %"),
+                tiler_util=num("Tiler Utilization %"),
+                alloc_sysmem=num("Alloc system memory"),
+                in_use_sysmem=num("In use system memory"),
+                recovery_count=num("recoveryCount"))
+
+
+def mem_pressure():
+    raw = sh(["/usr/bin/vm_stat"])
+    def pages(label):
+        m = re.search(rf"{re.escape(label)}:\s+(\d+)", raw)
+        return int(m.group(1)) if m else None
+    return dict(free_pages=pages("Pages free"),
+                compressed_pages=pages("Pages occupied by compressor"),
+                swapouts=pages("Swapouts"))
+
+
+def sample_stacks(pid, counter):
+    raw = sh(["/usr/bin/sample", str(pid), str(SAMPLE_SECS), "10", "-mayDie"])
+    for line in raw.splitlines():
+        m = re.match(r"\s+(\d+)\s+([A-Za-z_][\w:+.<>-]*)\s+\(in ([\w.-]+)\)", line)
+        if m:
+            counter[f"{m.group(2)} [{m.group(3)}]"] += int(m.group(1))
+
+
+def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "--stop":
+        pidfile = os.path.join(tempfile.gettempdir(), "mage-collect.pid")
+        try:
+            os.kill(int(open(pidfile).read().strip()), signal.SIGTERM)
+            print("mage-collect: stop requested")
+        except Exception as e:
+            print(f"mage-collect: nothing running ({e})")
+        return
+    if len(sys.argv) < 2:
+        print(__doc__)
+        sys.exit(1)
+    name = sys.argv[1]
+    duration = int(sys.argv[2]) if len(sys.argv) > 2 else 600
+    tmp = tempfile.gettempdir()
+    logpath = os.path.join(tmp, f"mage-collect-{name}.jsonl")
+    open(os.path.join(tmp, "mage-collect.pid"), "w").write(str(os.getpid()))
+
+    game_pat = re.compile(r"DOOMTheDarkAges|idTechLauncher", re.I)
+    series = []          # (t, procs, gpu, mem)
+    stacks = Counter()
+    t0 = time.time()
+    deadline = t0 + duration
+    last_sample = 0.0
+    stopped = False
+
+    def on_term(*_):
+        nonlocal stopped
+        stopped = True
+    signal.signal(signal.SIGTERM, on_term)
+
+    print(f"mage-collect: {duration}s → {logpath}")
+    with open(logpath, "w") as log:
+        while time.time() < deadline and not stopped:
+            t = time.time() - t0
+            procs = pids_of_interest()
+            gpu = gpu_stats()
+            mem = mem_pressure()
+            series.append((t, procs, gpu, mem))
+            log.write(json.dumps(dict(t=round(t, 1), procs=procs,
+                                      gpu=gpu, mem=mem)) + "\n")
+            log.flush()
+            if log.tell() > LOG_CAP:  # rotate: keep the newest half
+                log.close()
+                lines = open(logpath).readlines()
+                with open(logpath, "w") as f:
+                    f.writelines(lines[len(lines) // 2:])
+                log = open(logpath, "a")
+            if t - last_sample >= SAMPLE_EVERY:
+                last_sample = t
+                game = next((p for p, d in procs.items()
+                             if game_pat.search(d["name"])), None)
+                if game:
+                    sample_stacks(game, stacks)
+            time.sleep(TICK)
+
+    # summary
+    def agg(get):
+        vals = [v for v in (get(s) for s in series) if v is not None]
+        if not vals:
+            return None
+        return dict(min=round(min(vals), 1), avg=round(sum(vals) / len(vals), 1),
+                    max=round(max(vals), 1))
+    def game_cpu(s):
+        return sum(d["cpu"] for d in s[1].values() if game_pat.search(d["name"])) or None
+    def game_rss(s):
+        return sum(d["rss_kb"] for d in s[1].values() if game_pat.search(d["name"])) // 1024 or None
+    def ws_cpu(s):
+        return sum(d["cpu"] for d in s[1].values() if d["name"] == "wineserver") or None
+
+    summary = os.path.join(tmp, f"mage-collect-{name}-summary.txt")
+    with open(summary, "w") as f:
+        f.write(f"mage-collect summary — {name}, {len(series)} ticks "
+                f"({series[-1][0] if series else 0:.0f}s)\n\n")
+        f.write(f"game CPU %:        {agg(game_cpu)}\n")
+        f.write(f"game RSS MB:       {agg(game_rss)}\n")
+        f.write(f"wineserver CPU %:  {agg(ws_cpu)}\n")
+        f.write(f"GPU device util %: {agg(lambda s: s[2].get('device_util'))}\n")
+        f.write(f"GPU renderer util: {agg(lambda s: s[2].get('renderer_util'))}\n")
+        f.write(f"GPU tiler util %:  {agg(lambda s: s[2].get('tiler_util'))}\n")
+        f.write(f"GPU alloc mem GB:  {agg(lambda s: (s[2].get('alloc_sysmem') or 0) / 1e9 or None)}\n")
+        f.write(f"GPU recoveries:    {[s[2].get('recovery_count') for s in series[-1:]]}\n")
+        f.write(f"free pages:        {agg(lambda s: s[3].get('free_pages'))}\n")
+        f.write(f"swapouts:          {agg(lambda s: s[3].get('swapouts'))}\n\n")
+        f.write(f"top stacks ({sum(stacks.values())} samples):\n")
+        for sym, cnt in stacks.most_common(40):
+            f.write(f"  {cnt:6d}  {sym}\n")
+    try:
+        os.remove(os.path.join(tmp, "mage-collect.pid"))
+    except OSError:
+        pass
+    print(f"mage-collect: summary → {summary}")
+
+
+if __name__ == "__main__":
+    main()
