@@ -379,3 +379,21 @@ Next diagnostic steps: trace per-frame AS build sizes/counts; check whether
 any BLAS with nativeSize > _size ends up instanced into the TLAS; capture a
 GPU frame (Metal capture under Wine is unproven) or add MVK logging around
 acceleration-structure reference encoding.
+
+## 2026-08-01 late — windowing fixed, flicker isolated to two suspects
+
+The headless-window class of bugs is closed: gating is now a denylist
+(`MAGE_BACKGROUND_EXE`), game defaults to foreground with its own Dock
+presence; window owner "DOOMTheDarkAges", normal layer, alt-tab works.
+See `docs/handoff-2026-08-01-launch-stack.md` §1/§3.
+
+Remaining rendering issues, unchanged by windowing work:
+- Loading sits black until the window receives focus (activation timing),
+  then heavy flicker on interaction. New variable introduced today:
+  foreground promotion enables winemac's display-capture fullscreen path
+  (`CGCaptureAllDisplays`, cocoa_app.m ~line 895). A/B candidates:
+  HKCU\Software\Wine\Mac Driver "Capture Displays"=n; windowed mode.
+- In-scene corruption (blocky garbage spreading over 3D, UI clean) stands
+  as before: private sparse buffers are mandatory (no A/B possible — game
+  aborts at vkCreateBuffer without them), BLAS nativeSize growth /
+  retainCurrentGeneration remains the prime magevk suspect.
