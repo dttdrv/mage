@@ -95,6 +95,15 @@ def run_env(recipe, runtime, prefix):
     env["WINEPREFIX"] = str(prefix)
     env["CX_REPORT_REAL_USERNAME"] = "1"
     env["DYLD_FALLBACK_LIBRARY_PATH"] = str(runtime["root"] / "lib")
+    # Never let games switch the physical display mode: on Apple Silicon the
+    # capture+mode-switch path yields a black shielded screen. The game
+    # renders at its chosen resolution into its window and the compositor
+    # scales it (CrossOver/GPTK behavior). winemac patch, universal default.
+    env.setdefault("MAGE_FAKE_DISPLAY_MODES", "1")
+    # Games launched from a detached session must be allowed to take focus
+    # (macOS focus-steal prevention otherwise strands them behind the
+    # terminal; idTech idles at loading until focused). winemac patch.
+    env.setdefault("MAGE_FORCE_ACTIVATION", "1")
     # Steam games launched directly (bypassing applaunch) need these or
     # steam_api(64).dll calls RestartAppIfNecessary and the exe exits at once.
     appid = recipe.get("steam_appid")

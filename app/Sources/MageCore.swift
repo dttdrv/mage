@@ -588,6 +588,10 @@ final class MageStore: ObservableObject {
         statusLine = "mage \(args.joined(separator: " "))"
         logText = "$ mage \(args.joined(separator: " "))\n"
         let cli = root.appendingPathComponent("bin/mage")
+        if args.first == "run", args.count == 2,
+           let bottle = bottles.first(where: { $0.name == args[1] }) {
+            frontGameProcess(named: focusNames(for: recipe(for: bottle)))
+        }
         Task {
             let (_, code) = await Self.exec(cli, args) { [weak self] chunk in
                 Task { @MainActor in
@@ -775,11 +779,20 @@ final class MageStore: ObservableObject {
         stopLogTail()
         logText = "→ \(urlString) via Steam\n"
         statusLine = urlString
+        if urlString.hasPrefix("steam://run/"),
+           let bottle = bottles.first(where: { $0.prefix == prefix }) {
+            frontGameProcess(named: focusNames(for: recipe(for: bottle)))
+        }
         var env: [String: String] = [:]
         env["WINEPREFIX"] = prefix.path
         env["WINEDEBUG"] = "-all"
         env["WINEDLLOVERRIDES"] = "mscoree=d;mshtml=d"
         env["MAGE_APP_NAME"] = "Steam"
+        // Never switch the physical display mode (black shielded screen on
+        // Apple Silicon); compositor scales instead. See bin/mage run_env.
+        env["MAGE_FAKE_DISPLAY_MODES"] = "1"
+        // Allow the game to take focus when launched detached. winemac patch.
+        env["MAGE_FORCE_ACTIVATION"] = "1"
         // Denylist gating, mirroring bin/mage's BACKGROUND_EXES: known
         // orchestrators/helpers stay background; everything else (any game
         // exe, current or future) defaults to foreground with its own Dock
@@ -823,6 +836,62 @@ final class MageStore: ObservableObject {
     /// launch (or a wedged CLI call) still holds the busy flag.
     func stopBottle(_ bottle: Bottle) {
         runCLI(["stop", bottle.name], allowWhenBusy: true)
+    }
+
+    // MARK: Game focus
+
+    /// macOS 14+ silently drops programmatic self-activation from detached
+    /// processes — both [NSApp activate] and NSRunningApplication
+    /// activateWithOptions: from the wine process itself are ignored
+    /// (verified: MAGE_FORCE_ACTIVATION fires in winemac, isActive stays 0),
+    /// and System Events `set frontmost` reports success without effect.
+    /// The one request the system honors is an activation issued by a
+    /// regular foreground app proximate to a user gesture — i.e. Mage
+    /// itself, right after Play is clicked. Polls for the game's process
+    /// by its Dock name and fronts it; one re-front 15s later covers
+    /// windows created after the process registers.
+    func frontGameProcess(named names: [String]) {
+        guard !names.isEmpty else { return }
+        Task.detached {
+            var pending = Set(names)
+            let deadline = Date().addingTimeInterval(240)
+            while !pending.isEmpty && Date() < deadline {
+                for name in Array(pending) {
+                    guard let app = NSWorkspace.shared.runningApplications
+                        .first(where: { $0.localizedName == name }) else { continue }
+                    _ = app.activate(options: [.activateAllWindows,
+                                               .activateIgnoringOtherApps])
+                    pending.remove(name)
+                    Task.detached {
+                        try? await Task.sleep(nanoseconds: 15_000_000_000)
+                        _ = NSWorkspace.shared.runningApplications
+                            .first(where: { $0.localizedName == name })?
+                            .activate(options: [.activateAllWindows,
+                                                .activateIgnoringOtherApps])
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+    }
+
+    /// Dock names a bottle's game processes register under (mirrors
+    /// bin/mage app_name_for: exe basename minus .exe, first letter
+    /// capitalized). steam.exe is excluded — the client stays background.
+    private func focusNames(for recipe: Recipe?) -> [String] {
+        guard let recipe else { return [] }
+        var out: [String] = []
+        for step in recipe.launch ?? [] {
+            for prog in [step.program] + (step.appExes ?? []) {
+                var base = prog.split(whereSeparator: { $0 == "\\" || $0 == "/" })
+                    .last.map(String.init) ?? ""
+                if base.lowercased().hasSuffix(".exe") { base = String(base.dropLast(4)) }
+                guard !base.isEmpty, base.lowercased() != "steam" else { continue }
+                let name = base.prefix(1).uppercased() + base.dropFirst()
+                if !out.contains(name) { out.append(name) }
+            }
+        }
+        return out
     }
 
     // MARK: Steam account + owned games (stdlib Python bridge in tools/steam-bridge)

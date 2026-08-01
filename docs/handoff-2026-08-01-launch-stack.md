@@ -116,3 +116,37 @@ After EVERY test run: kill steam/wine/game processes and verify
 `ps aux | grep -iE 'wine|steam|doom|idtech' | grep -v grep | wc -l` == 0.
 Steam idle processes otherwise accumulate (20+ at one point) and later
 runs inherit a dirty wineserver.
+
+## 7. Focus/activation on macOS 26+ (2026-08-01 evening)
+
+Symptom chain being fixed: TDA launched from Mage stayed behind the
+terminal, idled at the loading screen (idTech gates rendering on focus),
+then flickered after a manual alt-tab.
+
+Fixed and verified:
+- `MAGE_FAKE_DISPLAY_MODES=1` (winemac `setMode:forDisplay:` no-op): game
+  never captures/mode-switches the physical display. TDA now runs a
+  1512x982 fullscreen window, compositor-scaled, no black shield.
+- winemac forces activation on a foreground app's first visible window
+  (`orderBelow:orAbove:activate:`, gated by the denylist; debug via
+  `MAGE_DEBUG_WINEMAC=1`).
+
+Verified dead ends on macOS 26/27 beta (all return success, no effect):
+- `[NSApp activate]` and `NSRunningApplication activateWithOptions:` from
+  the wine process itself (`MAGE_FORCE_ACTIVATION`, incl. 1s retry).
+- System Events `set frontmost of process` from osascript.
+- `tell application "X" to activate`.
+- Synthetic mouse/keyboard from the computer-use MCP (screenshots work,
+  events don't land — permission/OS-beta limitation).
+
+Current mechanism (needs real-user verification): Mage.app issues the
+activation itself, gesture-proximate to the Play click —
+`MageCore.frontGameProcess(named:)` polls NSRunningApplication for the
+game's Dock name (recipe launch-step programs + appExes, minus steam.exe)
+and calls `activate(options:[.activateAllWindows,.activateIgnoringOtherApps])`,
+with one re-front 15s later for late-created windows. Hooked into
+runCLI("run") and openInSteam(steam://run/).
+
+If that also proves insufficient, the next lever is the CrossOver-style
+one: per-game minimal .app wrappers launched via NSWorkspace.open, so the
+game's process tree originates from a LaunchServices user-driven launch.
