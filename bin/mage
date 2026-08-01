@@ -261,7 +261,7 @@ def exe_basename(program):
 
 
 def app_exes_for(step):
-    """MAGE_APP_EXE allowlist for a launch step: ':'-separated exe basenames.
+    """Exes that get named sibling loaders for a launch step (Dock identity).
     Defaults to the step's program; a recipe may widen it with "app_exes"
     (the program's basename is always included)."""
     exes = [exe_basename(step["program"])]
@@ -272,11 +272,10 @@ def app_exes_for(step):
 
 
 def app_exes_union(recipe):
-    """Recipe-wide MAGE_APP_EXE allowlist: every launch step's allowlist,
-    merged. A game re-spawned by a helper from an earlier step (Steam's
-    steam:// handoff) inherits that step's env, so every step must accept
-    every app exe — otherwise the game goes MAGE_BACKGROUND (headless:
-    no Dock, no alt-tab)."""
+    """Recipe-wide named-loader exe list: every launch step's list, merged.
+    A game re-spawned by a helper from an earlier step (Steam's steam://
+    handoff) inherits that step's env, so every step must name-load every
+    app exe."""
     seen = []
     for st in recipe.get("launch", []):
         for exe in app_exes_for(st).split(":"):
@@ -287,13 +286,31 @@ def app_exes_union(recipe):
 
 STEAM_UI_EXES = ("steamwebhelper.exe", "steamwebhelper_real.exe")
 
+# Known orchestrators/helpers that must never become a foreground macOS app.
+# Everything else defaults to foreground (denylist gating): any game exe
+# gets its own Dock presence with zero per-game recipe config, and a missing
+# recipe entry can never produce a headless uncloseable window.
+BACKGROUND_EXES = (
+    # steam orchestration
+    "steam.exe", "steamservice.exe", "steamerrorreporter.exe",
+    "steamerrorreporter64.exe", "steamsysinfo.exe", "hardwareupdater.exe",
+    "gldriverquery.exe", "gldriverquery64.exe", "vulkandriverquery.exe",
+    "vulkandriverquery64.exe", "steam_monitor.exe", "steambootstrapper.exe",
+    "streaming_client.exe", "gameoverlayui.exe",
+    # wine/system plumbing
+    "conhost.exe", "explorer.exe", "services.exe", "svchost.exe",
+    "rpcss.exe", "plugplay.exe", "winedevice.exe", "wineboot.exe",
+    "rundll32.exe", "msiexec.exe", "regsvr32.exe", "tabtip.exe",
+    "winemenubuilder.exe", "winecfg.exe", "control.exe", "notepad.exe",
+)
+
 
 def session_app_exes(all_exes):
-    """The allowlist actually exported as MAGE_APP_EXE. steam.exe itself is a
-    windowless orchestrator -> background. The Steam UI lives in
-    steamwebhelper_real.exe (single-process CEF wrapper); it must stay
-    foreground, otherwise winemac never promotes it, Steam's watchdog
-    reports 'steamwebhelper is not responding', and applaunch/steam:// die."""
+    """Exe basenames that get named sibling loaders (Dock identity).
+    steam.exe itself is a windowless orchestrator; the Steam UI lives in
+    steamwebhelper_real.exe (single-process CEF wrapper) and shows as
+    'Steam'. Gating itself is denylist-based (BACKGROUND_EXES), so this
+    list is only about WHICH exes get a prepared named loader."""
     out = []
     for exe in all_exes.split(":"):
         if exe.lower() == "steam.exe":
@@ -303,13 +320,6 @@ def session_app_exes(all_exes):
         for e in candidates:
             if e and e.lower() not in {x.lower() for x in out}:
                 out.append(e)
-    # fail-safe: an allowlist of ONLY Steam UI exes means the recipe forgot
-    # its game exe(s) — gating would mark the game MAGE_BACKGROUND and it
-    # would spawn headless (no Dock, no alt-tab, stuck on top). An empty
-    # allowlist disables gating instead; better a "wine" Dock icon than an
-    # uncloseable window.
-    if out and all(e.lower() in {x.lower() for x in STEAM_UI_EXES} for e in out):
-        return ""
     return ":".join(out)
 
 
@@ -355,7 +365,7 @@ def cmd_run(args):
                 print(f"env {k}={env[k]}")
         for st, (app, s) in zip(recipe.get("launch", []), steps):
             print(f"env MAGE_APP_NAME={app}")
-            print(f"env MAGE_APP_EXE={session_exes}")
+            print(f"env MAGE_BACKGROUND_EXE={':'.join(BACKGROUND_EXES)}")
             print("run " + " ".join(s))
         return
 
@@ -365,7 +375,8 @@ def cmd_run(args):
         print(f"mage: warning: {w}", file=sys.stderr)
     lf = open(log, "w")
     for st, (app, cmd) in zip(recipe.get("launch", []), steps):
-        step_env = dict(env, MAGE_APP_NAME=app, MAGE_APP_EXE=session_exes)
+        step_env = dict(env, MAGE_APP_NAME=app,
+                        MAGE_BACKGROUND_EXE=":".join(BACKGROUND_EXES))
         cwd = exe_cwd(prefix, st["program"])
         print(f"mage: {' '.join([cmd[1]] + st.get('args', []))}")
         if st.get("background", True):

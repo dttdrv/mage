@@ -485,10 +485,15 @@ final class MageStore: ObservableObject {
                 needles.append("steamapps\\common\\\(game.installDir)\\")
             }
             // Non-Steam recipes: real program names from the launch steps.
+            // Include each step's appExes too — a launcher (idTechLauncher)
+            // hands off to the real game exe (DOOMTheDarkAges) and exits;
+            // without the appExes needles the bottle stops counting as
+            // running the moment the launcher dies.
             // lastPathComponent only splits "/", so split on both separators —
             // otherwise the steam.exe filter below never fires.
             needles += (recipe(for: bottle)?.launch ?? [])
-                .map { $0.program.split(whereSeparator: { $0 == "\\" || $0 == "/" }).last.map(String.init) ?? "" }
+                .flatMap { [$0.program] + ($0.appExes ?? []) }
+                .map { $0.split(whereSeparator: { $0 == "\\" || $0 == "/" }).last.map(String.init) ?? "" }
                 .filter { !$0.isEmpty && $0.lowercased() != "steam.exe" }
             return Watch(bottle: bottle.name, prefix: bottle.prefix.path, needles: needles)
         }
@@ -775,31 +780,25 @@ final class MageStore: ObservableObject {
         env["WINEDEBUG"] = "-all"
         env["WINEDLLOVERRIDES"] = "mscoree=d;mshtml=d"
         env["MAGE_APP_NAME"] = "Steam"
-        // Recipe-wide exe union, mirroring bin/mage's app_exes_union: a game
-        // spawned via steam://run inherits this env, and without its exe on
-        // the allowlist it would go MAGE_BACKGROUND (headless: no Dock, no
-        // alt-tab). steam.exe itself is a windowless orchestrator and stays
-        // background; the Steam UI lives in steamwebhelper_real.exe and must
-        // stay foreground or Steam's watchdog kills it ("steamwebhelper is
-        // not responding").
-        var exes = ["steamwebhelper.exe", "steamwebhelper_real.exe"]
-        if let bottle = bottles.first(where: { $0.prefix == prefix }),
-           let steps = recipe(for: bottle)?.launch {
-            for step in steps {
-                let base = step.program
-                    .replacingOccurrences(of: "\\", with: "/")
-                    .split(separator: "/").last.map(String.init) ?? ""
-                for exe in [base] + (step.appExes ?? [])
-                where !exe.isEmpty
-                    && exe.caseInsensitiveCompare("steam.exe") != .orderedSame
-                    && !exes.contains(where: {
-                        $0.caseInsensitiveCompare(exe) == .orderedSame
-                    }) {
-                    exes.append(exe)
-                }
-            }
-        }
-        env["MAGE_APP_EXE"] = exes.joined(separator: ":")
+        // Denylist gating, mirroring bin/mage's BACKGROUND_EXES: known
+        // orchestrators/helpers stay background; everything else (any game
+        // exe, current or future) defaults to foreground with its own Dock
+        // presence — no per-game recipe config, and a missing recipe entry
+        // can never produce a headless uncloseable window. steam.exe itself
+        // is on the denylist; the Steam UI lives in steamwebhelper_real.exe
+        // and must stay foreground or Steam's watchdog kills it
+        // ("steamwebhelper is not responding").
+        env["MAGE_BACKGROUND_EXE"] = [
+            "steam.exe", "steamservice.exe", "steamerrorreporter.exe",
+            "steamerrorreporter64.exe", "steamsysinfo.exe", "hardwareupdater.exe",
+            "gldriverquery.exe", "gldriverquery64.exe", "vulkandriverquery.exe",
+            "vulkandriverquery64.exe", "steam_monitor.exe", "steambootstrapper.exe",
+            "streaming_client.exe", "gameoverlayui.exe",
+            "conhost.exe", "explorer.exe", "services.exe", "svchost.exe",
+            "rpcss.exe", "plugplay.exe", "winedevice.exe", "wineboot.exe",
+            "rundll32.exe", "msiexec.exe", "regsvr32.exe", "tabtip.exe",
+            "winemenubuilder.exe", "winecfg.exe", "control.exe", "notepad.exe",
+        ].joined(separator: ":")
         env["DYLD_FALLBACK_LIBRARY_PATH"] = wine.deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("lib").path
         Task {
