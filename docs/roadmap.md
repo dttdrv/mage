@@ -2,22 +2,33 @@
 
 Pinned items, in priority order. Status tracked per release in STATE.md.
 
-## 1. D3D translation layer (DX8/9/10/11/12/12U)
+## 1. Proton route: everything translates to Vulkan
 
-Goal: full Direct3D coverage without relying on WineD3D. Layered plan:
+Direction: follow Proton's model. All Direct3D versions go through
+Vulkan translators into magevk — one graphics backend, one place to
+optimize. Where Proton carries code we can use (translators, per-game
+workarounds, winevulkan-adjacent fixes), integrate it rather than
+reinventing.
 
-- **D3D12 / 12U (incl. DXR):** vkd3d-proton -> Vulkan -> magevk. DXR maps
-  onto VK_KHR_ray_tracing_pipeline / acceleration_structure, which magevk
-  already implements; the Dark Ages work is the proving ground for the RT
-  half. Status: untested end to end.
-- **D3D11:** DXMT (OSS, D3D11 -> Metal direct, ships in CrossOver's ARM64
-  preview) evaluated against DXVK -> magevk; keep whichever wins per
-  workload class, but only one ships as default. DXVK remains the fallback.
-- **D3D8/9/10:** DXVK covers 9/10/11; D3D8 via dgVoodoo2-style D3D8->11
-  wrapping in front of the same path.
-- **D3DMetal / GPTK4:** evaluate only if Apple's redistribution terms allow
-  bundling; no proprietary dependency will become the default. Tracked as
-  the compatibility bar to match, not as a component.
+- **D3D12 / 12U (incl. DXR):** vkd3d-proton -> Vulkan -> magevk. DXR
+  maps onto VK_KHR_ray_tracing_pipeline / acceleration_structure, which
+  magevk already implements; the Dark Ages work is the proving ground
+  for the RT half. Status: untested end to end.
+- **D3D9 / 10 / 11:** DXVK -> Vulkan -> magevk. Mature, Proton's default,
+  and its per-game config database ships with it.
+- **D3D8:** D8VK (DXVK-family D3D8 -> Vulkan) where it fits; otherwise a
+  D3D8 -> 11 wrapper in front of the same DXVK path.
+- **Proton integration:** evaluate building against Proton's wine fork
+  or cherry-picking its game-fix patchset (protonfixes-style per-game
+  tweaks become recipe entries). Long-term goal: a game that runs under
+  Proton on Linux runs under mage on macOS with no extra work.
+- **DXMT (D3D11 -> Metal direct):** benchmark against DXVK -> magevk
+  for the D3D11 class; it ships as default only if it wins clearly, and
+  even then only for D3D11. It breaks the one-backend rule, so the bar
+  is high.
+- **D3DMetal / GPTK4:** evaluation only, and only if Apple's
+  redistribution terms allow bundling. Proprietary; will never be the
+  default. Tracked as the compatibility bar to match.
 
 ## 2. ARM64 Wine + FEX (replace Rosetta 2)
 
