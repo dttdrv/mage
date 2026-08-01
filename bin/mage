@@ -259,6 +259,20 @@ def app_exes_for(step):
     return ":".join(exes)
 
 
+def app_exes_union(recipe):
+    """Recipe-wide MAGE_APP_EXE allowlist: every launch step's allowlist,
+    merged. A game re-spawned by a helper from an earlier step (Steam's
+    steam:// handoff) inherits that step's env, so every step must accept
+    every app exe — otherwise the game goes MAGE_BACKGROUND (headless:
+    no Dock, no alt-tab)."""
+    seen = []
+    for st in recipe.get("launch", []):
+        for exe in app_exes_for(st).split(":"):
+            if exe.lower() not in {e.lower() for e in seen}:
+                seen.append(exe)
+    return ":".join(seen)
+
+
 def cmd_run(args):
     meta, prefix = find_bottle(args.name)
     recipe = load_recipe(meta["recipe"])
@@ -268,10 +282,16 @@ def cmd_run(args):
     log = Path(tempfile.gettempdir()) / f"mage-{args.name}.log"
 
     steps = []
+    all_exes = app_exes_union(recipe)
     for st in recipe.get("launch", []):
         app = app_name_for(st["program"])
         ensure_app_launcher(runtime, app)
         steps.append((app, [wine, st["program"]] + st.get("args", [])))
+    # named loaders for every allowlisted exe (the loader derives the Dock
+    # name from the exe itself when a helper re-spawns the game)
+    for exe in all_exes.split(":"):
+        if exe:
+            ensure_app_launcher(runtime, app_name_for(exe))
 
     if args.dry_run:
         print(f"log: {log}")
@@ -280,7 +300,7 @@ def cmd_run(args):
                 print(f"env {k}={env[k]}")
         for st, (app, s) in zip(recipe.get("launch", []), steps):
             print(f"env MAGE_APP_NAME={app}")
-            print(f"env MAGE_APP_EXE={app_exes_for(st)}")
+            print(f"env MAGE_APP_EXE={all_exes}")
             print("run " + " ".join(s))
         return
 
@@ -290,7 +310,7 @@ def cmd_run(args):
         print(f"mage: warning: {w}", file=sys.stderr)
     lf = open(log, "w")
     for st, (app, cmd) in zip(recipe.get("launch", []), steps):
-        step_env = dict(env, MAGE_APP_NAME=app, MAGE_APP_EXE=app_exes_for(st))
+        step_env = dict(env, MAGE_APP_NAME=app, MAGE_APP_EXE=all_exes)
         print(f"mage: {' '.join([cmd[1]] + st.get('args', []))}")
         if st.get("background", True):
             subprocess.Popen(cmd, env=step_env, stdout=lf, stderr=subprocess.STDOUT,

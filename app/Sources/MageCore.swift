@@ -775,7 +775,26 @@ final class MageStore: ObservableObject {
         env["WINEDEBUG"] = "-all"
         env["WINEDLLOVERRIDES"] = "mscoree=d;mshtml=d"
         env["MAGE_APP_NAME"] = "Steam"
-        env["MAGE_APP_EXE"] = "steam.exe"
+        // Recipe-wide exe union, mirroring bin/mage's app_exes_union: a game
+        // spawned via steam://run inherits this env, and without its exe on
+        // the allowlist it would go MAGE_BACKGROUND (headless: no Dock, no
+        // alt-tab).
+        var exes = ["steam.exe"]
+        if let bottle = bottles.first(where: { $0.prefix == prefix }),
+           let steps = recipe(for: bottle)?.launch {
+            for step in steps {
+                let base = step.program
+                    .replacingOccurrences(of: "\\", with: "/")
+                    .split(separator: "/").last.map(String.init) ?? ""
+                for exe in [base] + (step.appExes ?? [])
+                where !exe.isEmpty && !exes.contains(where: {
+                    $0.caseInsensitiveCompare(exe) == .orderedSame
+                }) {
+                    exes.append(exe)
+                }
+            }
+        }
+        env["MAGE_APP_EXE"] = exes.joined(separator: ":")
         env["DYLD_FALLBACK_LIBRARY_PATH"] = wine.deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("lib").path
         Task {
