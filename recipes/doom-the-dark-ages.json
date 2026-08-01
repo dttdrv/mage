@@ -4,6 +4,7 @@
     "MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS": "1",
     "MAGE_VK_DEVICE_ID": "0x744C",
     "MAGE_VK_DEVICE_NAME": "AMD Radeon RX 7900 XTX",
+    "MAGE_VK_DEVICE_TYPE": "2",
     "MAGE_VK_DRIVER_VERSION": "0x00800156",
     "MAGE_VK_VENDOR_ID": "0x1002",
     "MVK_CONFIG_ENABLE_EXPERIMENTAL_RAY_TRACING": "1",
@@ -16,8 +17,7 @@
     "SteamGameId": "3017860",
     "WINEDLLOVERRIDES": "mscoree=d;mshtml=d",
     "WINEESYNC": "0",
-    "WINEMSYNC": "1",
-    "MAGE_VK_DEVICE_TYPE": "2"
+    "WINEMSYNC": "1"
   },
   "id": "doom-the-dark-ages",
   "launch": [
@@ -38,7 +38,7 @@
     },
     {
       "background": true,
-      "program": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\DOOMTheDarkAges\\DOOMTheDarkAges.exe"
+      "program": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\DOOMTheDarkAges\\idTechLauncher.exe"
     }
   ],
   "runtime": "mage-wine-11.13-rt",

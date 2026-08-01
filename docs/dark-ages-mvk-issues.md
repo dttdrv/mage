@@ -277,3 +277,105 @@ in win32u/d3dkmt.c anyway).
 Housekeeping: the recipe no longer sets WINEDEBUG=+vulkan /
 MVK_CONFIG_TRACE_VULKAN_CALLS / MVK_CONFIG_SHADER_DUMP_DIR — the +vulkan trace
 grew the mage log to 8.5 GB in one session and filled the disk mid-build.
+
+## Post-launch crashes (2026-08-01)
+
+### 1. Null call in TLAS build (0xc0000005 at exe+0xC84112)
+
+After the RT pipeline links, the game builds its first TLAS and calls a global
+function pointer that is NULL. Minidump walk (MemoryList stream 5; Breakpad
+writes no Memory64List) shows `call qword ptr [rip+0x3cc1e70]` with a zero slot.
+The call signature (device, buildType, pBuildInfo sType 1000150000,
+pMaxPrimitiveCounts, pSizeInfo sType 1000150004) is
+vkGetAccelerationStructureBuildSizesKHR. The game resolves RT procs through
+vkGetInstanceProcAddr(instance, name); wine's GIPA returned NULL for any
+device-level function (`is_available_instance_function` rejects the name and
+the function returns NULL before reaching the device-table fallback). Real
+drivers/loaders return device procs from GIPA. Fix: wiage `dlls/winevulkan/
+loader.c` — when the instance-function check fails, fall through to
+`wine_vk_get_device_proc_addr` (WARN + return thunk) before NULL. One boot
+session then logged 1001 GIPA-fallback resolutions. The earlier GDPA
+"extension not enabled" fallback remains needed for the 8-extension probe
+device.
+
+### 2. Deliberate fatal: requiredMinWaveSize / subgroup size control
+
+Next crash was the game killing itself (`mov dword ptr [0], 0x12345678` at
+exe+0x20AC70E, idTech fatal-error stub) with the message: "Could not ensure
+that compute pipeline for render prog '%s' gets compiled using the
+`requiredMinWaveSize` of `%d` because the hardware doesn't have support for
+setting the required wave size for the compute shader stage". magevk
+advertised `requiredSubgroupSizeStages = 0` (MVKDevice.mm). Fix: advertise
+VK_SHADER_STAGE_ALL_GRAPHICS | COMPUTE. MoltenVK ignores
+VkPipelineShaderStageRequiredSubgroupSizeCreateInfo at pipeline creation, so
+any requested size is accepted; Metal's thread execution width is 32. Game
+then survived past the previous crash window (alive 3+ min, 150-300% CPU).
+
+### 3. fp64 in one compute shader (fixed via demotion)
+
+One pipeline failed to compile: `program_source:293: error: 'double' is not
+supported in Metal` (SPIR-V with Float64 capability — a single averaging
+loop accumulating into a double, then converting back to float). Metal has
+no fp64 at all. Fix: SPIRV-Cross-ray `spirv_msl.cpp` demotes fp64 to fp32
+in MSL output — `type_to_glsl` maps SPIRType::Double to "float" and the
+backend drops the `lf` literal suffix. Shader now compiles; precision loss
+is negligible for this use. Note: the demotion does not cover doubles in
+buffer blocks (MSL has no layout for them); none encountered so far.
+
+### 4. AS compaction copy failures (611x per session)
+
+`vkCmdCopyAccelerationStructureKHR(): The destination acceleration structure
+has insufficient capacity` — instrumented values: `result=-2 dstGen=0x0
+reqNative=43648 dstSize=27904 metaSize=0 mode=0`. idTech compacts a BLAS,
+queries the compacted size, allocates a destination of exactly that size,
+then CLONE-copies the source into it. The clone needs the source's native
+(uncompacted) Metal size (~1.56x the compacted Vulkan size), so
+`retainFullWriteGeneration` failed on the native capacity check before
+allocating any generation. Two-part fix in `MVKAccelerationStructure::
+retainFullWriteGeneration`: (a) native capacity grows to the required size
+instead of failing — storage in excess of the Vulkan AS size is privately
+allocated (only in-budget generations use placement in the game's buffer);
+(b) `_metadataCapacity` likewise grows instead of failing (the
+instance-metadata buffer is a separate device-private MTLBuffer, not bounded
+by the Vulkan AS size). Verified: zero capacity errors afterwards, game
+stays alive. Debug instrumentation in MVKCmdAccelerationStructure.mm was
+removed after diagnosis.
+
+### 5. Current blocker: white window, ~0.3 fps, presents never complete
+
+With 1-4 fixed the game boots fully: creates its Saved Games config
+(r_mode 21) and profile, builds all RT pipelines, opens a 1362x884 window —
+then sits on a white screen at ~230% CPU. Findings (2026-08-01):
+
+- Process samples show a live render loop: vkBeginCommandBuffer,
+  vkCmdBuildAccelerationStructuresKHR, vkUpdateDescriptorSets,
+  vkCmdBindPipeline/VertexBuffers, then vkWaitForFences/vkWaitSemaphores
+  (84% of samples). Bink async decode threads exist.
+- vkQueuePresentKHR is almost never sampled (once in 13s of sampling); the
+  one captured stack sat inside client_surface_present ->
+  MVKPresentableSwapchainImage::getCAMetalDrawable — i.e. blocked waiting
+  for a free drawable. Metal HUD (MTL_HUD_ENABLED=1) initializes in-process
+  but never draws, consistent with no present ever completing.
+- GPU is genuinely busy: IOAccelerator PerformanceStatistics shows Device
+  Utilization 74-78%, Renderer 74%, Tiler 18-22%, 13 GB allocated system
+  memory; no GPU recovery events. Not a deadlock — pathologically slow
+  frames (est. >=3 s/frame) with all 3 swapchain images in flight.
+- Swapchain itself is healthy: 3 images, 1280x720, on the WineMetalView
+  CAMetalLayer; no mvk-error in log after the fp64 fix.
+
+Open hypotheses, untested:
+
+1. Per-frame full AS rebuilds are pathological in our implementation (the
+   game rebuilds/refits every frame; fine on native drivers, seconds here).
+2. A GPU-side infinite/very long ray-traversal: if a grown generation
+   (nativeSize > _size) is later referenced as an instance source,
+   retainCurrentGeneration returns nullptr and the TLAS may encode a
+   stale/empty AS reference, sending traversal into garbage. Would present
+   exactly like this: GPU pegged, fences never signal, presents starved.
+3. A game-side validation/readback loop (dispatch, fence, compare result,
+   retry on mismatch) that our emulation can never satisfy.
+
+Next diagnostic steps: trace per-frame AS build sizes/counts; check whether
+any BLAS with nativeSize > _size ends up instanced into the TLAS; capture a
+GPU frame (Metal capture under Wine is unproven) or add MVK logging around
+acceleration-structure reference encoding.
