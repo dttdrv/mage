@@ -37,6 +37,10 @@
       "then_wait": 20
     },
     {
+      "app_exes": [
+        "idTechLauncher.exe",
+        "DOOMTheDarkAges.exe"
+      ],
       "background": true,
       "program": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\DOOMTheDarkAges\\idTechLauncher.exe"
     }

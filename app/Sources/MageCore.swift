@@ -15,10 +15,12 @@ struct LaunchStep: Codable, Hashable {
     var args: [String]?
     var background: Bool?
     var thenWait: Int?
+    var appExes: [String]?
 
     enum CodingKeys: String, CodingKey {
         case program, args, background
         case thenWait = "then_wait"
+        case appExes = "app_exes"
     }
 }
 
@@ -543,8 +545,8 @@ final class MageStore: ObservableObject {
 
     // MARK: CLI actions (launches/install/doctor go through bin/mage)
 
-    func runCLI(_ args: [String], thenReload: Bool = false) {
-        guard let root, !busy else { return }
+    func runCLI(_ args: [String], thenReload: Bool = false, allowWhenBusy: Bool = false) {
+        guard let root, allowWhenBusy || !busy else { return }
         stopLogTail()
         busy = true
         statusLine = "mage \(args.joined(separator: " "))"
@@ -742,6 +744,7 @@ final class MageStore: ObservableObject {
         env["WINEDEBUG"] = "-all"
         env["WINEDLLOVERRIDES"] = "mscoree=d;mshtml=d"
         env["MAGE_APP_NAME"] = "Steam"
+        env["MAGE_APP_EXE"] = "steam.exe"
         env["DYLD_FALLBACK_LIBRARY_PATH"] = wine.deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("lib").path
         Task {
@@ -762,8 +765,10 @@ final class MageStore: ObservableObject {
     }
 
     /// Stop a running bottle (game, launchers, Steam in its prefix).
+    /// Allowed while busy: Stop must never be a silent no-op just because a
+    /// launch (or a wedged CLI call) still holds the busy flag.
     func stopBottle(_ bottle: Bottle) {
-        runCLI(["stop", bottle.name])
+        runCLI(["stop", bottle.name], allowWhenBusy: true)
     }
 
     // MARK: Steam account + owned games (stdlib Python bridge in tools/steam-bridge)

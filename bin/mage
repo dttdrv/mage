@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tarfile
@@ -236,10 +237,26 @@ def ensure_app_launcher(runtime, name):
 
 def app_name_for(program):
     """'C:\\Program Files (x86)\\Steam\\steam.exe' -> 'Steam'"""
-    base = program.replace("\\", "/").rsplit("/", 1)[-1]
+    base = exe_basename(program)
     if base.lower().endswith(".exe"):
         base = base[:-4]
     return base[:1].upper() + base[1:] if base else "Wine"
+
+
+def exe_basename(program):
+    """'C:\\Program Files (x86)\\Steam\\steam.exe' -> 'steam.exe'"""
+    return program.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def app_exes_for(step):
+    """MAGE_APP_EXE allowlist for a launch step: ':'-separated exe basenames.
+    Defaults to the step's program; a recipe may widen it with "app_exes"
+    (the program's basename is always included)."""
+    exes = [exe_basename(step["program"])]
+    for extra in step.get("app_exes", []):
+        if extra.lower() not in {e.lower() for e in exes}:
+            exes.append(extra)
+    return ":".join(exes)
 
 
 def cmd_run(args):
@@ -261,8 +278,9 @@ def cmd_run(args):
         for k in sorted(env):
             if k.startswith(("WINE", "ROSETTA", "MTL", "MVK", "DYLD")):
                 print(f"env {k}={env[k]}")
-        for app, s in steps:
+        for st, (app, s) in zip(recipe.get("launch", []), steps):
             print(f"env MAGE_APP_NAME={app}")
+            print(f"env MAGE_APP_EXE={app_exes_for(st)}")
             print("run " + " ".join(s))
         return
 
@@ -272,7 +290,7 @@ def cmd_run(args):
         print(f"mage: warning: {w}", file=sys.stderr)
     lf = open(log, "w")
     for st, (app, cmd) in zip(recipe.get("launch", []), steps):
-        step_env = dict(env, MAGE_APP_NAME=app)
+        step_env = dict(env, MAGE_APP_NAME=app, MAGE_APP_EXE=app_exes_for(st))
         print(f"mage: {' '.join([cmd[1]] + st.get('args', []))}")
         if st.get("background", True):
             subprocess.Popen(cmd, env=step_env, stdout=lf, stderr=subprocess.STDOUT,
@@ -465,6 +483,59 @@ def cmd_steam_install(args):
         time.sleep(3)
 
 
+def prefix_processes(prefix):
+    """Pids of processes pinned to this prefix, two ways:
+    (a) ps eww lines carrying the exact WINEPREFIX value — catches wineserver
+        and wrapper processes. Wine PE processes clobber their argv/environ
+        on macOS, so ps shows nothing of their env;
+    (b) wine-looking processes (command contains 'wine' or '.exe') holding an
+        open file under the prefix — catches detached PE survivors (crash
+        handlers, helpers that lost their server).
+    Scoping is exact: the WINEPREFIX value must be followed by whitespace/EOL
+    (so bottles/steam does not match bottles/steam2), and open files must be
+    strictly under <prefix>/. Other bottles and unrelated apps never match."""
+    p = str(prefix)
+    needle = re.compile(re.escape(f"WINEPREFIX={p}") + r"(\s|$)")
+    me, parent = os.getpid(), os.getppid()
+    r = subprocess.run(["/bin/ps", "axwwweo", "pid,command"],
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    pids = set()
+    wineish = {}
+    for line in r.stdout.splitlines():
+        fields = line.split(None, 1)
+        if len(fields) != 2:
+            continue
+        try:
+            pid = int(fields[0])
+        except ValueError:
+            continue
+        if pid in (me, parent):
+            continue
+        cmd = fields[1]
+        if "wine" in cmd.lower() or ".exe" in cmd.lower():
+            wineish[pid] = cmd
+        if needle.search(cmd):
+            pids.add(pid)
+    # (b) open-file probe, only for wine-looking candidates not already found
+    rest = [pid for pid in wineish if pid not in pids]
+    if rest:
+        r = subprocess.run(["/usr/sbin/lsof", "-a", "-Fn", "-p",
+                            ",".join(str(p) for p in rest)],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        cur = None
+        for line in r.stdout.splitlines():
+            if line.startswith("p"):
+                try:
+                    cur = int(line[1:])
+                except ValueError:
+                    cur = None
+            elif line.startswith("n") and cur is not None:
+                path = line[1:]
+                if path == p or path.startswith(p + "/"):
+                    pids.add(cur)
+    return sorted((pid, wineish.get(pid, "")) for pid in pids)
+
+
 def cmd_stop(args):
     """Stop everything running in a bottle's prefix (game, launchers, Steam)."""
     meta, prefix = find_bottle(args.name)
@@ -476,7 +547,37 @@ def cmd_stop(args):
     if not server.exists():
         die(f"runtime {recipe['runtime']}: {server} does not exist")
     r = subprocess.run([str(server), "-k"], env=env)
-    if r.returncode:
+    # wineserver -k ends the session, but detached processes (crash handlers,
+    # helpers that lost their server) can survive it. Sweep whatever still
+    # carries this prefix's WINEPREFIX: SIGTERM, up to 3s grace, then SIGKILL.
+    survivors = prefix_processes(prefix)
+    had_survivors = bool(survivors)
+    if survivors:
+        print(f"mage: reaping {len(survivors)} leftover process(es) in prefix:")
+        for pid, cmd in survivors:
+            print(f"  term {pid}  {cmd[:100]}")
+        for pid, _ in survivors:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        deadline = time.time() + 3
+        while time.time() < deadline and survivors:
+            time.sleep(0.25)
+            survivors = prefix_processes(prefix)
+        if survivors:
+            for pid, cmd in survivors:
+                print(f"  kill {pid}  {cmd[:100]}")
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            time.sleep(0.5)
+            survivors = prefix_processes(prefix)
+            if survivors:
+                print("mage: warning: process(es) survived SIGKILL: "
+                      + ", ".join(str(p) for p, _ in survivors), file=sys.stderr)
+    if r.returncode and not had_survivors:
         # wineserver -k exits non-zero when no session is alive for the
         # prefix — stopping a stopped bottle is a no-op, not an error.
         print(f"mage: nothing running for '{args.name}'")
