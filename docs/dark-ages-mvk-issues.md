@@ -397,3 +397,29 @@ Remaining rendering issues, unchanged by windowing work:
   as before: private sparse buffers are mandatory (no A/B possible — game
   aborts at vkCreateBuffer without them), BLAS nativeSize growth /
   retainCurrentGeneration remains the prime magevk suspect.
+
+## 6. Fast-path MoltenVK (25440e4e) fails the idTechLauncher GPU gate (2026-08-01)
+
+GPT's `upstream/MoltenVK-ray-as-minimal/build-ray-native-fast-path` build
+(rev 25440e4e "Add ray tracing maintenance1 support", 6.28 MB) makes
+idTechLauncher show "GPU Driver Error" (raytracing-incompatible gate) and
+the game exe never spawns. The magevk rayquery build (13.35 MB,
+dist/runtime-ray-icb) passes the same gate with identical env.
+
+- Instance extension lists are IDENTICAL (160 exts, incl.
+  VK_KHR_ray_tracing_pipeline, ray_query, acceleration_structure,
+  ray_tracing_maintenance1, deferred_host_operations, descriptor_indexing).
+- So the delta is in feature/property bits or device identity
+  (deviceUUID/LUID vs the D3DKMT EnumAdapters2 match — the launcher's check
+  chain documented in §D3DKMT). A probe to diff feature bits was attempted
+  but the quick C probe kept crashing in vkGetPhysicalDeviceFeatures2
+  (probe bug, not the dylib) — needs a proper capture (gfxrecon or GPT's
+  own tooling) against both builds.
+- Fast-path build is staged at mage/dist/runtime-ray-fastpath/lib
+  (picker-visible, not default). Toolchain fallback lib restored to the
+  rayquery build; backup kept as
+  install-macos12-freetype/lib/libMoltenVK.dylib.rt-rayquery-20260801.bak.
+- Also observed: the game binds MoltenVK via DYLD_LIBRARY_PATH from the
+  runtime's vulkan_library_path when the wineserver session starts clean,
+  but falls back to toolchain lib/libMoltenVK.dylib otherwise — the
+  toolchain copy must always be a working build, it is the real default.
