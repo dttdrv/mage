@@ -95,6 +95,12 @@ def run_env(recipe, runtime, prefix):
     env["WINEPREFIX"] = str(prefix)
     env["CX_REPORT_REAL_USERNAME"] = "1"
     env["DYLD_FALLBACK_LIBRARY_PATH"] = str(runtime["root"] / "lib")
+    # Steam games launched directly (bypassing applaunch) need these or
+    # steam_api(64).dll calls RestartAppIfNecessary and the exe exits at once.
+    appid = recipe.get("steam_appid")
+    if appid:
+        env.setdefault("SteamAppId", str(appid))
+        env.setdefault("SteamGameId", str(appid))
     # MoltenVK selection: a recipe-level path wins over the runtime default,
     # so Advanced settings can pin a game to a specific MageVK build.
     vulkan_library_path = recipe.get("vulkan_library_path") or runtime.get("vulkan_library_path")
@@ -224,15 +230,21 @@ def ensure_steam_wrapper(prefix):
         print("mage: steamwebhelper wrapper locked (uchg)")
 
 
-def ensure_app_launcher(runtime, name):
+def ensure_app_launcher(runtime, name, display=None):
     """Create/update a copy of the wine loader named after the app (patched
     embedded Info.plist) so the Dock/menu bar show e.g. "Steam" not "Wine".
-    mage-wine's ntdll execs it when MAGE_APP_NAME is set. Idempotent."""
+    mage-wine's ntdll execs it when MAGE_APP_NAME is set. Idempotent.
+    `display` overrides the Dock name when it differs from the loader name
+    (ntdll derives the loader name from the exe basename)."""
     tool = MAGE_DIR / "tools" / "wine-app-name" / "patch-wine-loader-name.py"
     if not tool.is_file():
         return
-    subprocess.run([sys.executable, str(tool), str(runtime["root"]), name],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    cmd = [sys.executable, str(tool), str(runtime["root"]), name]
+    if display and display != name:
+        bundleid = 'app.mage.' + ''.join(
+            c.lower() if c.isalnum() else '-' for c in name).strip('-')
+        cmd += [bundleid, display]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def app_name_for(program):
@@ -273,6 +285,45 @@ def app_exes_union(recipe):
     return ":".join(seen)
 
 
+STEAM_UI_EXES = ("steamwebhelper.exe", "steamwebhelper_real.exe")
+
+
+def session_app_exes(all_exes):
+    """The allowlist actually exported as MAGE_APP_EXE. steam.exe itself is a
+    windowless orchestrator -> background. The Steam UI lives in
+    steamwebhelper_real.exe (single-process CEF wrapper); it must stay
+    foreground, otherwise winemac never promotes it, Steam's watchdog
+    reports 'steamwebhelper is not responding', and applaunch/steam:// die."""
+    out = []
+    for exe in all_exes.split(":"):
+        if exe.lower() == "steam.exe":
+            candidates = STEAM_UI_EXES
+        else:
+            candidates = (exe,)
+        for e in candidates:
+            if e and e.lower() not in {x.lower() for x in out}:
+                out.append(e)
+    # fail-safe: an allowlist of ONLY Steam UI exes means the recipe forgot
+    # its game exe(s) — gating would mark the game MAGE_BACKGROUND and it
+    # would spawn headless (no Dock, no alt-tab, stuck on top). An empty
+    # allowlist disables gating instead; better a "wine" Dock icon than an
+    # uncloseable window.
+    if out and all(e.lower() in {x.lower() for x in STEAM_UI_EXES} for e in out):
+        return ""
+    return ":".join(out)
+
+
+def exe_cwd(prefix, program):
+    """Unix path of the exe's directory (C:\\... -> prefix/drive_c/...).
+    Games expect their working directory next to the exe; without it some
+    die on asset lookup (DOOM 2016: C++ exception e06d7363 right after
+    Steam API init)."""
+    p = program.replace("\\", "/")
+    if len(p) > 2 and p[1] == ":":
+        return str((prefix / "drive_c" / p[2:].lstrip("/")).parent)
+    return None
+
+
 def cmd_run(args):
     meta, prefix = find_bottle(args.name)
     recipe = load_recipe(meta["recipe"])
@@ -283,15 +334,19 @@ def cmd_run(args):
 
     steps = []
     all_exes = app_exes_union(recipe)
+    session_exes = session_app_exes(all_exes)
     for st in recipe.get("launch", []):
         app = app_name_for(st["program"])
         ensure_app_launcher(runtime, app)
         steps.append((app, [wine, st["program"]] + st.get("args", [])))
     # named loaders for every allowlisted exe (the loader derives the Dock
     # name from the exe itself when a helper re-spawns the game)
-    for exe in all_exes.split(":"):
+    for exe in session_exes.split(":"):
         if exe:
             ensure_app_launcher(runtime, app_name_for(exe))
+    # the Steam UI process shows as "Steam", not "Steamwebhelper_real"
+    if "steamwebhelper_real.exe" in session_exes.lower():
+        ensure_app_launcher(runtime, "Steamwebhelper_real", display="Steam")
 
     if args.dry_run:
         print(f"log: {log}")
@@ -300,7 +355,7 @@ def cmd_run(args):
                 print(f"env {k}={env[k]}")
         for st, (app, s) in zip(recipe.get("launch", []), steps):
             print(f"env MAGE_APP_NAME={app}")
-            print(f"env MAGE_APP_EXE={all_exes}")
+            print(f"env MAGE_APP_EXE={session_exes}")
             print("run " + " ".join(s))
         return
 
@@ -310,13 +365,15 @@ def cmd_run(args):
         print(f"mage: warning: {w}", file=sys.stderr)
     lf = open(log, "w")
     for st, (app, cmd) in zip(recipe.get("launch", []), steps):
-        step_env = dict(env, MAGE_APP_NAME=app, MAGE_APP_EXE=all_exes)
+        step_env = dict(env, MAGE_APP_NAME=app, MAGE_APP_EXE=session_exes)
+        cwd = exe_cwd(prefix, st["program"])
         print(f"mage: {' '.join([cmd[1]] + st.get('args', []))}")
         if st.get("background", True):
             subprocess.Popen(cmd, env=step_env, stdout=lf, stderr=subprocess.STDOUT,
-                             start_new_session=True)
+                             cwd=cwd, start_new_session=True)
         else:
-            subprocess.run(cmd, env=step_env, stdout=lf, stderr=subprocess.STDOUT)
+            subprocess.run(cmd, env=step_env, stdout=lf, stderr=subprocess.STDOUT,
+                           cwd=cwd)
         wait = st.get("then_wait", 0)
         if wait:
             print(f"mage: waiting {wait}s")

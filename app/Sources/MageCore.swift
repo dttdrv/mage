@@ -778,8 +778,11 @@ final class MageStore: ObservableObject {
         // Recipe-wide exe union, mirroring bin/mage's app_exes_union: a game
         // spawned via steam://run inherits this env, and without its exe on
         // the allowlist it would go MAGE_BACKGROUND (headless: no Dock, no
-        // alt-tab).
-        var exes = ["steam.exe"]
+        // alt-tab). steam.exe itself is a windowless orchestrator and stays
+        // background; the Steam UI lives in steamwebhelper_real.exe and must
+        // stay foreground or Steam's watchdog kills it ("steamwebhelper is
+        // not responding").
+        var exes = ["steamwebhelper.exe", "steamwebhelper_real.exe"]
         if let bottle = bottles.first(where: { $0.prefix == prefix }),
            let steps = recipe(for: bottle)?.launch {
             for step in steps {
@@ -787,9 +790,11 @@ final class MageStore: ObservableObject {
                     .replacingOccurrences(of: "\\", with: "/")
                     .split(separator: "/").last.map(String.init) ?? ""
                 for exe in [base] + (step.appExes ?? [])
-                where !exe.isEmpty && !exes.contains(where: {
-                    $0.caseInsensitiveCompare(exe) == .orderedSame
-                }) {
+                where !exe.isEmpty
+                    && exe.caseInsensitiveCompare("steam.exe") != .orderedSame
+                    && !exes.contains(where: {
+                        $0.caseInsensitiveCompare(exe) == .orderedSame
+                    }) {
                     exes.append(exe)
                 }
             }

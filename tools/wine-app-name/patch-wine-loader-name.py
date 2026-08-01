@@ -23,7 +23,10 @@ import struct
 import sys
 
 
-def patch(src, dst, appname, bundleid):
+def patch(src, dst, appname, bundleid, display=None):
+    # appname = loader file name (CFBundleExecutable must match it);
+    # display = CFBundleName shown in Dock/menu bar (defaults to appname)
+    display = display or appname
     data = bytearray(open(src, 'rb').read())
     assert struct.unpack_from('<I', data, 0)[0] == 0xfeedfacf, "not a 64-bit Mach-O"
     ncmds = struct.unpack_from('<I', data, 16)[0]
@@ -44,7 +47,7 @@ def patch(src, dst, appname, bundleid):
     size = struct.unpack_from('<Q', data, sect + 40)[0]
     foff = struct.unpack_from('<I', data, sect + 48)[0]
     xml = bytes(data[foff:foff + size])
-    xml = xml.replace(b'<string>Wine</string>', f'<string>{appname}</string>'.encode())
+    xml = xml.replace(b'<string>Wine</string>', f'<string>{display}</string>'.encode())
     xml = xml.replace(b'<string>wine</string>', f'<string>{appname}</string>'.encode(), 1)
     xml = xml.replace(b'org.winehq.wine', bundleid.encode())
     assert foff + len(xml) <= len(data), "no file slack after __info_plist"
@@ -59,12 +62,16 @@ def main():
     install, appname = sys.argv[1], sys.argv[2]
     bundleid = sys.argv[3] if len(sys.argv) > 3 else \
         'app.mage.' + ''.join(c.lower() if c.isalnum() else '-' for c in appname).strip('-')
+    # optional 4th arg: display name when it differs from the loader file
+    # name (e.g. loader "Steamwebhelper_real" shows as "Steam" — ntdll picks
+    # the loader by exe-derived name, Launch Services shows the plist name)
+    display = sys.argv[4] if len(sys.argv) > 4 else appname
     loader = os.path.join(install, 'lib', 'wine', 'x86_64-unix', 'wine')
     dst = os.path.join(install, 'lib', 'wine', 'x86_64-unix', appname)
     if os.path.exists(dst) and os.path.getmtime(dst) >= os.path.getmtime(loader):
         print(f"up to date: {dst}")
         return
-    patch(loader, dst, appname, bundleid)
+    patch(loader, dst, appname, bundleid, display)
     print(f"created: {dst} (bundle id {bundleid})")
 
 
