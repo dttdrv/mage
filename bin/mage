@@ -343,6 +343,41 @@ def exe_cwd(prefix, program):
     return None
 
 
+def cmd_launcher(args):
+    """Create (idempotently) a minimal per-game .app that runs this bottle,
+    and print its path. Launching through LaunchServices (`open`,
+    NSWorkspace.openApplication) is the only macOS 26+ mechanism that gives
+    a detached game process real activation rights — the CrossOver model.
+    The app's own process exits right after spawning wine, so its Dock
+    presence is momentary; the game's named sibling loader keeps identity."""
+    meta, _prefix = find_bottle(args.name)
+    recipe = load_recipe(meta["recipe"])
+    title = recipe.get("title") or args.name
+    safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in title).strip()
+    bundleid = "app.mage.launcher." + "".join(
+        c.lower() if c.isalnum() else "-" for c in title).strip("-")
+    app = (Path.home() / "Library/Application Support/Mage/Launchers"
+           / f"{safe}.app")
+    exe = app / "Contents/MacOS/launcher"
+    script = f'#!/bin/sh\nexec "{MAGE_DIR}/bin/mage" run "{args.name}"\n'
+    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>launcher</string>
+<key>CFBundleIdentifier</key><string>{bundleid}</string>
+<key>CFBundleName</key><string>{safe}</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>LSMinimumSystemVersion</key><string>26.0</string>
+</dict></plist>
+"""
+    if not exe.exists() or exe.read_text() != script:
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_text(script)
+        exe.chmod(0o755)
+        (app / "Contents/Info.plist").write_text(plist)
+    print(app)
+
+
 def cmd_run(args):
     meta, prefix = find_bottle(args.name)
     recipe = load_recipe(meta["recipe"])
@@ -727,6 +762,10 @@ def main():
     pr.add_argument("name")
     pr.add_argument("--dry-run", action="store_true")
     pr.set_defaults(fn=cmd_run)
+    pl = sub.add_parser("launcher",
+                        help="create/update a per-game launcher .app and print its path")
+    pl.add_argument("name")
+    pl.set_defaults(fn=cmd_launcher)
     pk = sub.add_parser("stop", help="kill every Wine process in a bottle's prefix")
     pk.add_argument("name")
     pk.set_defaults(fn=cmd_stop)

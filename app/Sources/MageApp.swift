@@ -317,7 +317,7 @@ struct GameDetailView: View {
                         onPlay: bottle.map { b in
                             running
                                 ? { store.stopBottle(b) }
-                                : { store.runCLI(["run", b.name]) }
+                                : { store.playBottle(b) }
                         },
                         playDisabled: store.busy,
                         playBusy: store.busy

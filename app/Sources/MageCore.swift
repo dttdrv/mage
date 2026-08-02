@@ -838,6 +838,55 @@ final class MageStore: ObservableObject {
         runCLI(["stop", bottle.name], allowWhenBusy: true)
     }
 
+    /// Play via the bottle's launcher .app: `bin/mage launcher` creates it
+    /// (idempotent) and prints its path, then LaunchServices opens it. Only
+    /// a LaunchServices launch gives the detached game process real
+    /// activation rights on macOS 26+ (see bin/mage cmd_launcher).
+    func playBottle(_ bottle: Bottle) {
+        guard let root, !busy else { return }
+        stopLogTail()
+        busy = true
+        statusLine = "mage launcher \(bottle.name)"
+        logText = "$ mage launcher \(bottle.name)\n"
+        frontGameProcess(named: focusNames(for: recipe(for: bottle)))
+        let cli = root.appendingPathComponent("bin/mage")
+        Task {
+            let (out, code) = await Self.exec(cli, ["launcher", bottle.name]) { [weak self] chunk in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.logText += chunk
+                    if self.logText.count > 300_000 {
+                        self.logText = String(self.logText.suffix(200_000))
+                    }
+                }
+            }
+            busy = false
+            guard code == 0,
+                  let line = out.split(separator: "\n").last
+                        .map({ $0.trimmingCharacters(in: .whitespaces) }),
+                  !line.isEmpty
+            else {
+                statusLine = "launcher failed (exit \(code))"
+                refreshRunning()
+                return
+            }
+            let url = URL(fileURLWithPath: line)
+            NSWorkspace.shared.openApplication(
+                at: url,
+                configuration: NSWorkspace.OpenConfiguration()
+            ) { _, error in
+                Task { @MainActor in
+                    if let error {
+                        self.statusLine = "open failed: \(error.localizedDescription)"
+                    } else {
+                        self.statusLine = "launched \(bottle.name)"
+                    }
+                    self.refreshRunning()
+                }
+            }
+        }
+    }
+
     // MARK: Game focus
 
     /// macOS 14+ silently drops programmatic self-activation from detached
