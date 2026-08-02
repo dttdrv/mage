@@ -508,10 +508,12 @@ final class MageStore: ObservableObject {
             for watch in watches where !watch.needles.isEmpty {
                 var candidates: [Int] = []
                 for line in lines {
-                    guard let sp = line.firstIndex(of: " "),
-                          let pid = Int(line[line.startIndex..<sp]) else { continue }
+                    // ps right-pads the pid column with leading spaces.
+                    let trimmed = line.drop(while: { $0 == " " })
+                    guard let sp = trimmed.firstIndex(of: " "),
+                          let pid = Int(trimmed[trimmed.startIndex..<sp]) else { continue }
                     if watch.needles.contains(where: {
-                        line.localizedCaseInsensitiveContains($0)
+                        trimmed.localizedCaseInsensitiveContains($0)
                     }) {
                         candidates.append(pid)
                     }
@@ -525,11 +527,13 @@ final class MageStore: ObservableObject {
         }
     }
 
-    /// Full command line + environment for every process, one per line.
+    /// "PID full-command-line+environment" for every process, one per line
+    /// (pid column required by refreshRunning's parse; same ps invocation as
+    /// `mage stop`'s prefix_processes).
     nonisolated private static func psEnvironmentLines() -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["axwwweo", "command"]
+        process.arguments = ["axwwweo", "pid,command"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = Pipe()
