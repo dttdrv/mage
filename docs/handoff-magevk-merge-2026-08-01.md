@@ -95,5 +95,5 @@ means the result persists), then resolve the conflicted files.
   and `mage/dist/runtime-ray-icb/lib/libMoltenVK.dylib` (ad-hoc resigned).
 - Mage fixes verified present in merged source: binaryFunctions link, AS
   capacity grow, requiredSubgroupSizeStages.
-- In-game retest pending (see `docs/dark-ages-mvk-issues.md` section 5 for
+- In-game retest pending (see `docs/handoff-2026-08-01.md` Part 2 for
   the open white-window / present-starvation blocker).
