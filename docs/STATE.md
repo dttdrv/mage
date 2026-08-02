@@ -492,3 +492,13 @@ Everything from 2026-08-01 — denylist gating, applaunch, windowing,
 macOS 26/27 activation-policy findings, the full TDA MoltenVK/SPIRV-Cross
 saga, and open issues in priority order — lives in ONE document:
 `docs/handoff-2026-08-01.md` (audience: GPT/Codex on magevk/winevulkan).
+
+## 2026-08-02: RT merge + native traceRay fast path deployed
+
+magevk mage-rt-rayquery merged the 4 RT commits (local merge e87c07fd,
+unpushed); SPIRV-Cross-ray b476f1dd ports the native traceRay fast path
+(query-loop fallback, disabled under the position-fetch ABI). Deployed
+build (md5 7d8dfb73…) passed the TDA launcher gate and handed off to the
+game exe; 0 mvk-error; 35-37 FPS avg with large spikes in 300-frame MVK
+perf windows. Flicker/corruption not re-verified. Full record: the
+live-state section of `docs/handoff-2026-08-01.md`.
