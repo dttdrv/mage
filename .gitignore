@@ -15,7 +15,9 @@ vendor/
 .venv/
 tools/computer-use/
 app/.build/
-docs/testing/
+
+# Development/process docs — local working notes, not published
+docs/
 
 # Stack source checkouts (large, managed locally)
 /magevk/
