@@ -1,12 +1,13 @@
 # Mage
 
-Free, open-source CrossOver alternative for Apple silicon. Runs Windows
-games through a custom stack, with a native macOS app on top.
+Windows games, native on Apple silicon. Mage is a free, open-source
+macOS app that installs and runs Windows games through its own
+compatibility stack.
 
 The stack, all mapped to Mage:
 
 - Wiage: custom Wine build (patched for macOS 26+ and Apple silicon)
-- MageVK: custom MoltenVK build (Vulkan on Metal, ray tracing work)
+- MageVK: custom MoltenVK fork (Vulkan on Metal, ray tracing work)
 - DXage: custom DXVK build (Direct3D on Vulkan, planned)
 
 Requires macOS 26 or later.
@@ -45,4 +46,4 @@ code.
 - `bin/` CLI runner
 - `tools/` Steam bridge (library and achievement queries over the Steam
   Web API), steamwebhelper wrapper, Wine app-name patcher
-- `docs/` state ledger, design guidelines, research notes
+- `recipes/` per-game launch recipes (JSON)

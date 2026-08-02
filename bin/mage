@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mage — OSS CrossOver alternative for Apple silicon. 0.1 alpha CLI."""
+"""mage — Windows games, native on Apple silicon. 0.1 alpha CLI."""
 import argparse
 import json
 import os
