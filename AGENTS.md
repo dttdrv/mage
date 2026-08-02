@@ -72,6 +72,14 @@ immediately — that is the mechanism that prevents repeats.
 - MoltenVK deploy targets: BOTH `mage/dist/<build>/lib/` AND
   `toolchains/wine-mage-11.13/install-macos12-freetype/lib/` — the
   toolchain copy is the real default when DYLD_LIBRARY_PATH doesn't stick.
+- NEVER deploy a MoltenVK binary into Mage that was not built from
+  `mage/magevk`. Main-project builds lack every Mage hook (spoof, sparse,
+  fake features) by design. Before ANY deploy or test:
+  `strings <dylib> | grep -c MAGE_VK_DEVICE_NAME` must be ≥1 (and
+  MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS). New upstream work goes in via
+  git merge/cherry-pick into magevk + rebuild, never via binary copy.
+  (2026-08-02: dropped GPT's main-tree build in raw; launcher GPU gate
+  failed; a full test cycle wasted on a predictable artifact mismatch.)
 - Display sleep mimics a black screen in screenshots: `caffeinate -u -t 1`
   before screencapture; ~110KB PNG = black screen, ~1MB+ = real content.
 
