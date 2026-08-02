@@ -3,6 +3,7 @@ prefixes/
 build/
 dist/
 runtimes/
+!runtimes/*.example.json
 worktrees/
 tools/steam-bridge/auth/
 *.log

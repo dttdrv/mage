@@ -1,0 +1,50 @@
+{
+  "id": "doom-the-dark-ages",
+  "title": "DOOM: The Dark Ages",
+  "steam_appid": 3017860,
+  "runtime": "mage-wine-11.13-rt",
+  "env": {
+    "MAGE_VK_VENDOR_ID": "0x1002",
+    "MAGE_VK_DEVICE_ID": "0x744C",
+    "MAGE_VK_DEVICE_NAME": "AMD Radeon RX 7900 XTX",
+    "MAGE_VK_DEVICE_TYPE": "2",
+    "MAGE_VK_DRIVER_VERSION": "0x00800156",
+    "MAGE_VK_HEAP_SIZE_MB": "12288",
+    "MAGE_MVK_ALLOW_UNSUPPORTED_FEATURES": "1",
+    "MAGE_MVK_ENABLE_PRIVATE_SPARSE_BUFFERS": "1",
+    "MAGE_MVK_RGB9E5_BLEND": "1",
+    "MVK_CONFIG_ENABLE_EXPERIMENTAL_RAY_TRACING": "1",
+    "MVK_CONFIG_USE_METAL_PRIVATE_API": "1",
+    "MVK_CONFIG_FAKE_GEOMETRY_SHADER": "1",
+    "MVK_CONFIG_FAKE_SHADER_BUFFER_INT64_ATOMICS": "1",
+    "MVK_CONFIG_FAKE_SHADER_CULL_DISTANCE": "1",
+    "ROSETTA_ADVERTISE_AVX": "1",
+    "WINEMSYNC": "1",
+    "WINEESYNC": "0",
+    "WINEDEBUG": "-all",
+    "WINEDLLOVERRIDES": "mscoree=d;mshtml=d;nvngx=b;nvapi64=b",
+    "SteamAppId": "3017860",
+    "SteamGameId": "3017860"
+  },
+  "launch": [
+    {
+      "program": "C:\\Program Files (x86)\\Steam\\steam.exe",
+      "args": [
+        "-silent",
+        "-noverifyfiles",
+        "-nobootstrapupdate",
+        "-skipinitialbootstrap",
+        "-cef-disable-sandbox",
+        "-cef-disable-gpu",
+        "-cef-disable-gpu-compositing"
+      ],
+      "background": true,
+      "then_wait": 20
+    },
+    {
+      "program": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\DOOMTheDarkAges\\idTechLauncher.exe",
+      "app_exes": ["idTechLauncher.exe", "DOOMTheDarkAges.exe"],
+      "background": true
+    }
+  ]
+}

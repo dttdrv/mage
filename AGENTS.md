@@ -72,6 +72,14 @@ immediately — that is the mechanism that prevents repeats.
 - MoltenVK deploy targets: BOTH `mage/dist/<build>/lib/` AND
   `toolchains/wine-mage-11.13/install-macos12-freetype/lib/` — the
   toolchain copy is the real default when DYLD_LIBRARY_PATH doesn't stick.
+  But when the runtime JSON sets `vulkan_library_path` (e.g.
+  `dist/runtime-ray-icb/lib`), bin/mage puts THAT on DYLD_LIBRARY_PATH and
+  the game loads the dist copy — updating only the toolchain lib means the
+  game never sees the change (2026-08-02: RGB9E5 knob "inert" for a full
+  test cycle for exactly this reason). In the dist lib the four files
+  `libMoltenVK{,.1,.1.4.3}.dylib` + `libvulkan.1.dylib` are REAL files,
+  not symlinks — replace all four. After deploy, prove it in-game:
+  `lsof -p <gamepid> | grep libMoltenVK` + md5 the loaded path.
 - NEVER deploy a MoltenVK binary into Mage that was not built from
   `mage/magevk`. Main-project builds lack every Mage hook (spoof, sparse,
   fake features) by design. Before ANY deploy or test:
