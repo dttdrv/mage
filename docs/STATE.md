@@ -481,3 +481,56 @@ applies on boot) -> wait for real SetSteamID -> forward. The CLI's
 confirm loop detects drops but gives up before an updating client
 settles; TODO: also gate on login state (connection_log) before
 forwarding, and tolerate client-restart-for-update in the wait loop.
+
+## 2026-08-01: TDA launch stack, windowing, activation policy, MoltenVK A/B
+
+DOOM: The Dark Ages (appid 3017860) is playable: campaign runs, user has
+played. Launch: `bin/mage run doom-the-dark-ages` (idTechLauncher direct,
+denylist gating gives the game its own Dock app) or GUI Play. Full detail:
+`docs/handoff-2026-08-01-launch-stack.md`, GPU-side issues:
+`docs/dark-ages-mvk-issues.md`, wine patches:
+`toolchains/wine-mage-11.13/BUILD.md`.
+
+Launch stack (commits c5c0f74, e471f5a):
+- Steam games must go through `steam.exe -applaunch <appid>` — direct exe
+  launch dies at SteamAPI_Init (DOOM 2016 proof). doom2016.json uses
+  applaunch + `app_exes` for running-state detection.
+- Gating is a DENYLIST (MAGE_BACKGROUND_EXE in ntdll loader_exec): known
+  orchestrators stay background, every other exe defaults to a foreground
+  macOS app with its own Dock identity. No per-game config possible/needed.
+
+Windowing (commit 34207ff, winemac patches in BUILD.md):
+- MAGE_FAKE_DISPLAY_MODES=1: game never captures/mode-switches the physical
+  display (black shield gone); compositor scales. VERIFIED fullscreen
+  1512x982.
+- winemac forces activation on a foreground app's first visible window;
+  MAGE_DEBUG_WINEMAC=1 traces it.
+
+macOS 26/27 activation policy (all verified dead ends, handoff §7):
+[NSApp activate], NSRunningApplication activateWithOptions from the wine
+process, System Events `set frontmost` (success, no effect), `tell app to
+activate`, synthetic MCP input — all dropped. Honored path: a regular
+foreground app proximate to a user gesture. Mage.app therefore fronts the
+game itself: MageCore.frontGameProcess polls NSRunningApplication for the
+game's Dock name after Play (runCLI "run" + openInSteam steam://run).
+STILL OPEN: TDA sits at the loading gate until a manual alt-tab — the
+Mage-side fix only covers GUI launches and awaits a real-user verdict.
+
+MoltenVK A/B (commit c308c43):
+- GPT's fast-path build (upstream/MoltenVK-ray-as-minimal
+  build-ray-native-fast-path, rev 25440e4e, 6.28 MB) FAILS the
+  idTechLauncher GPU gate ("GPU Driver Error", game never spawns).
+  Instance extension lists identical to the working build (160, full RT
+  set) — delta is feature bits or device identity vs the D3DKMT LUID
+  match. Staged at dist/runtime-ray-fastpath (picker only), NOT default.
+- Live default: dist/runtime-ray-icb (magevk rayquery build, 13.35 MB);
+  toolchain fallback install-*/lib/libMoltenVK.dylib restored to the same
+  build (backup .rt-rayquery-20260801.bak). The toolchain copy is the real
+  default — DYLD_LIBRARY_PATH only wins on a clean wineserver session.
+
+Open for TDA, in priority order: (1) loading-gate alt-tab (above);
+(2) in-scene flicker/black blotches — GPU-side, suspects private sparse
+buffers + BLAS nativeSize growth (dark-ages-mvk-issues §5); (3) perf —
+user reports "super slow"; fast-path build was the hope, blocked by the
+GPU gate; (4) second-alt-tab black screen (present/drawable
+reacquisition).
