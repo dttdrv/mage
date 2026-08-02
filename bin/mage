@@ -353,9 +353,10 @@ def cmd_launcher(args):
     meta, _prefix = find_bottle(args.name)
     recipe = load_recipe(meta["recipe"])
     title = recipe.get("title") or args.name
-    safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in title).strip()
-    bundleid = "app.mage.launcher." + "".join(
-        c.lower() if c.isalnum() else "-" for c in title).strip("-")
+    safe = " ".join("".join(c if c.isalnum() or c in " -_" else " "
+                             for c in title).split())
+    bundleid = "app.mage.launcher." + "-".join(
+        "".join(c.lower() if c.isalnum() else " " for c in title).split())
     app = (Path.home() / "Library/Application Support/Mage/Launchers"
            / f"{safe}.app")
     exe = app / "Contents/MacOS/launcher"
