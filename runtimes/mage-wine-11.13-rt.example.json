@@ -1,0 +1,8 @@
+{
+  "id": "mage-wine-11.13-rt",
+  "root": "dist/wiage",
+  "wine": "bin/wine",
+  "wineserver": "bin/wineserver",
+  "vulkan_library_path": "dist/magevk/lib",
+  "notes": "Wiage runtime + MageVK libraries. Extract the release assets: wiage-runtime.tar.gz -> dist/wiage, magevk-lib.tar.gz -> dist/magevk/lib."
+}
