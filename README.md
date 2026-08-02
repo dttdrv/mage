@@ -6,6 +6,16 @@ compatibility stack.
 
 Requires macOS 26 or later.
 
+## Repositories
+
+- [mage](https://github.com/dttdrv/mage) — this repo: the app, the
+  CLI, recipes
+- [magevk](https://github.com/dttdrv/magevk) — Vulkan on Metal,
+  MoltenVK fork for gaming
+- [magevk-spirv-cross](https://github.com/dttdrv/magevk-spirv-cross) —
+  MSL shader translation for MageVK
+- [wiage](https://github.com/dttdrv/wiage) — Wine for Apple silicon
+
 ## Components
 
 Each component works on its own. You do not need the Mage app to use
