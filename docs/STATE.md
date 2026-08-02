@@ -482,10 +482,13 @@ confirm loop detects drops but gives up before an updating client
 settles; TODO: also gate on login state (connection_log) before
 forwarding, and tolerate client-restart-for-update in the wait loop.
 
-## 2026-08-01: TDA playable; launch stack + MoltenVK saga
+## 2026-08-01: TDA boots to menu; launch stack + MoltenVK saga
 
-DOOM: The Dark Ages is playable (user played the campaign). Everything
-from 2026-08-01 — denylist gating, applaunch, windowing, macOS 26/27
-activation-policy findings, the full TDA MoltenVK/SPIRV-Cross saga, and
-open issues in priority order — lives in ONE document:
+DOOM: The Dark Ages verified state: boots, passes launcher GPU gates,
+reaches menu/loading, presents frames. NOT established as playable —
+user briefly tested; rendering was extremely slow and flickering. The
+earlier "user played the campaign" claim was wrong and is retracted.
+Everything from 2026-08-01 — denylist gating, applaunch, windowing,
+macOS 26/27 activation-policy findings, the full TDA MoltenVK/SPIRV-Cross
+saga, and open issues in priority order — lives in ONE document:
 `docs/handoff-2026-08-01.md` (audience: GPT/Codex on magevk/winevulkan).
