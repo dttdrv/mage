@@ -19,6 +19,7 @@ app/.build/
 
 # Development/process docs — local working notes, not published
 docs/
+/AGENTS.md
 
 # Stack source checkouts (large, managed locally)
 /magevk/
